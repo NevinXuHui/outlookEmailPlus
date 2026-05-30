@@ -8,6 +8,47 @@ All notable changes to OutlookMail Plus are documented in this file.
 
 - **Issue #65 Watchtower 容器镜像过时**：`docker-compose.yml` 中固定 Watchtower 版本为 `containrrr/watchtower:1.7.1`，避免本地缓存的旧版镜像（内嵌 Docker 客户端 API 1.25）连接新版本 Docker Engine（要求 API 1.44+）时失败。README 新增故障排查指引。
 
+## [v2.7.0] - 2026-05-29
+
+### 新增功能 / New Features
+
+- **Issue #69 性能优化 — Phase 1 首屏降载**：
+  - 新增 `/api/bootstrap` 轻量端点，替代首页阶段对 `/api/settings` 的重复重查询
+  - `checkVersionUpdate()` 延迟 5 秒执行，避免首屏阶段外网请求抢占 sync worker
+  - `load_groups_with_account_count()` 聚合查询，替代 N+1 循环查询
+- **Issue #69 性能优化 — Phase 2 接口缓存与查询收敛**：
+  - `api_get_overview_summary()` 新增 30 秒 TTL 进程级缓存
+  - `api_version_check()` 支持 `enable_version_check` 设置开关
+
+### 修复 / Bug Fixes
+
+- **Issue #70 Figma 邮件展示修复**：修复 Figma 验证邮件在前端的展示问题。
+- **Issue #71 版本号与发版一致性**：`outlook_web.__version__` 与 Git tag / GitHub Release 对齐为 `2.7.0`；CI tag 构建新增 `scripts/check_release_version.py` 门禁（校验 `__version__` + `CHANGELOG.md`）。
+
+### 重要变更 / Important Changes
+
+- 版本号从 `2.6.0` 升级至 `2.7.0`（`outlook_web.__version__`）。
+- Docker 发版：`docker-build-push.yml` 在 push `v*.*.*` tag 时强制版本与 CHANGELOG 一致。
+
+## [v2.6.0] - 2026-05-19
+
+### 新增功能 / New Features
+
+- **Issue #60 号池管理 UI 与状态维护 MVP**：
+  - 新增 `GET /api/pool-admin/accounts`（池内/池外/分组/状态/provider/搜索筛选 + 分页）
+  - 新增 `POST /api/pool-admin/accounts/<id>/action`（移入/移出号池、冻结/恢复/退休/强制释放）
+  - claimed 状态保护：占用中的账号仅允许 `force_release`
+  - 前端号池管理页：筛选、分页、批量操作、行内动作
+
+### 修复 / Bug Fixes
+
+- **号池管理 i18n**：补全英文模式翻译（29 条精确词条 + 6 条 regex 规则）。
+
+### 重要变更 / Important Changes
+
+- 版本号从 `2.5.0` 升级至 `2.6.0`。
+- 新增 Pool Admin 四层模块（routes/controllers/services/repositories）。
+
 ## [v2.5.0] - 2026-05-07
 
 ### 新增功能 / New Features
