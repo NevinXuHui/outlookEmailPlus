@@ -4478,6 +4478,83 @@ ${details}
             return result;
         }
 
+        // ── 批量删除邮件 ──
+
+        function showBatchDeleteEmailsConfirm() {
+            if (selectedAccountIds.size === 0) {
+                showToast(translateAppTextLocal('请选择要删除邮件的账号'), 'error');
+                return;
+            }
+
+            const accounts = resolveSelectedAccountsForBatchFetch();
+            if (accounts.length === 0) {
+                showToast(translateAppTextLocal('请选择要删除邮件的账号'), 'error');
+                return;
+            }
+
+            const confirmMsg = `确定要删除选中的 ${accounts.length} 个账号的所有邮件吗？\n\n此操作将删除以下文件夹的邮件：\n• 收件箱\n• 垃圾邮件箱\n\n⚠️ 此操作不可恢复！`;
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+
+            batchDeleteSelectedEmails(accounts);
+        }
+
+        async function batchDeleteSelectedEmails(accounts) {
+            const toastId = 'batch-delete-emails-toast-' + Date.now();
+            showPersistentToast(toastId, `${translateAppTextLocal('正在批量删除邮件')}... (0/${accounts.length})`);
+
+            const ids = accounts.map(a => a.id);
+            let processedCount = 0;
+
+            try {
+                const response = await fetch('/api/emails/batch-delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        account_ids: ids, 
+                        folders: ['inbox', 'junkemail']
+                    })
+                });
+                const data = await response.json();
+
+                dismissPersistentToast(toastId);
+
+                if (!data.success) {
+                    handleApiError(data, translateAppTextLocal('批量删除邮件失败'));
+                    return;
+                }
+
+                const summary = data.summary || {};
+                const totalAccounts = summary.total_accounts || 0;
+                const successAccounts = summary.success_accounts || 0;
+                const failedAccounts = summary.failed_accounts || 0;
+                const totalDeleted = summary.total_deleted_emails || 0;
+
+                // 显示结果
+                if (successAccounts > 0) {
+                    const msg = `批量删除邮件完成：\n成功: ${successAccounts} 个账号，删除 ${totalDeleted} 封邮件\n失败: ${failedAccounts} 个账号`;
+                    showToast(msg, failedAccounts > 0 ? 'warning' : 'success');
+                } else {
+                    showToast(`批量删除邮件失败：${failedAccounts} 个账号全部失败`, 'error');
+                }
+
+                // 清空邮件缓存，强制刷新
+                emailListCache = {};
+                
+                // 如果当前选中的账号被删除了邮件，刷新邮件列表
+                if (currentAccount && accounts.some(acc => acc.email === currentAccount)) {
+                    await loadEmails(currentAccount, true);
+                }
+
+            } catch (error) {
+                dismissPersistentToast(toastId);
+                showToast(translateAppTextLocal('批量删除邮件失败'), 'error');
+                console.error('批量删除邮件错误:', error);
+            }
+        }
+
         function showBatchFetchConfirm() {
             if (selectedAccountIds.size === 0) {
                 showToast(translateAppTextLocal('请选择要批量拉取邮件的账号'), 'error');

@@ -752,6 +752,239 @@ def api_delete_emails() -> Any:
 
 
 @login_required
+def api_batch_delete_emails() -> Any:
+    """批量删除多个账号的所有邮件
+    
+    请求参数:
+    - account_ids: 账号ID列表
+    - folders: 要删除的文件夹列表，默认 ['inbox', 'junkemail']
+    
+    返回:
+    {
+        "success": true,
+        "summary": {
+            "total_accounts": 3,
+            "success_accounts": 2,
+            "failed_accounts": 1,
+            "total_deleted_emails": 150
+        },
+        "results": [
+            {
+                "account_id": 1,
+                "email": "test@example.com",
+                "success": true,
+                "deleted_count": 50,
+                "folders": {
+                    "inbox": {"deleted": 30, "success": true},
+                    "junkemail": {"deleted": 20, "success": true}
+                }
+            },
+            ...
+        ]
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    account_ids = data.get("account_ids", [])
+    folders = data.get("folders", ["inbox", "junkemail"])
+
+    if not isinstance(account_ids, list) or not account_ids:
+        return build_error_response(
+            "ACCOUNT_IDS_REQUIRED",
+            "请选择要删除邮件的账号",
+            message_en="Please select accounts to delete emails",
+            status=400,
+        )
+
+    if not isinstance(folders, list) or not folders:
+        return build_error_response(
+            "FOLDERS_REQUIRED",
+            "请指定要删除的文件夹",
+            message_en="Please specify folders to delete",
+            status=400,
+        )
+
+    try:
+        parsed_ids = [int(aid) for aid in account_ids]
+    except (TypeError, ValueError):
+        return build_error_response(
+            "INVALID_PARAM",
+            "account_ids 必须为整数列表",
+            message_en="account_ids must be a list of integers",
+            status=400,
+        )
+
+    # 去重
+    deduped_ids: List[int] = []
+    seen_ids = set()
+    for aid in parsed_ids:
+        if aid in seen_ids:
+            continue
+        seen_ids.add(aid)
+        deduped_ids.append(aid)
+
+    results: List[Dict[str, Any]] = []
+    success_accounts = 0
+    failed_accounts = 0
+    total_deleted_emails = 0
+
+    for aid in deduped_ids:
+        account = None
+        try:
+            account = accounts_repo.get_account_by_id(int(aid))
+        except Exception:
+            account = None
+
+        if not account:
+            results.append({
+                "account_id": int(aid),
+                "success": False,
+                "error": "ACCOUNT_NOT_FOUND"
+            })
+            failed_accounts += 1
+            continue
+
+        email_addr = str(account.get("email") or "")
+        account_type = (account.get("account_type") or "outlook").strip().lower()
+
+        # IMAP账号不支持远程删除
+        if account_type == "imap":
+            results.append({
+                "account_id": int(aid),
+                "email": email_addr,
+                "success": False,
+                "error": "IMAP_DELETE_NOT_SUPPORTED",
+                "message": "IMAP 邮箱不支持远程删除"
+            })
+            failed_accounts += 1
+            continue
+
+        # 获取分组代理设置
+        proxy_url = ""
+        try:
+            if account.get("group_id"):
+                group = groups_repo.get_group_by_id(account["group_id"])
+                if group:
+                    proxy_url = group.get("proxy_url", "") or ""
+        except Exception:
+            proxy_url = ""
+
+        # 为每个文件夹删除邮件
+        folder_results: Dict[str, Any] = {}
+        account_deleted_count = 0
+        account_success = False
+
+        for folder in folders:
+            try:
+                # 先获取该文件夹的邮件列表
+                if account_type == "imap":
+                    # IMAP账号已经在上面被过滤了，这里不会执行
+                    continue
+
+                # 使用 Graph API 获取邮件ID
+                graph_result = graph_service.get_emails_graph(
+                    account.get("client_id") or "",
+                    account.get("refresh_token") or "",
+                    folder,
+                    0,  # skip
+                    999,  # top - 获取尽可能多的邮件
+                    proxy_url,
+                )
+
+                if not graph_result.get("success"):
+                    folder_results[folder] = {
+                        "success": False,
+                        "error": graph_result.get("error") or "获取邮件列表失败"
+                    }
+                    continue
+
+                emails = graph_result.get("emails", [])
+                message_ids = [e.get("id") for e in emails if e.get("id")]
+
+                if not message_ids:
+                    folder_results[folder] = {
+                        "success": True,
+                        "deleted": 0,
+                        "message": "该文件夹无邮件"
+                    }
+                    continue
+
+                # 删除邮件
+                delete_response, method_used = email_delete_service.delete_emails_with_fallback(
+                    email_addr=email_addr,
+                    client_id=account.get("client_id") or "",
+                    refresh_token=account.get("refresh_token") or "",
+                    message_ids=message_ids,
+                    proxy_url=proxy_url,
+                    delete_emails_graph=graph_service.delete_emails_graph,
+                    delete_emails_imap=imap_service.delete_emails_imap,
+                    imap_server_new=IMAP_SERVER_NEW,
+                    imap_server_old=IMAP_SERVER_OLD,
+                )
+
+                if delete_response.get("success"):
+                    deleted_count = delete_response.get("success_count", len(message_ids))
+                    folder_results[folder] = {
+                        "success": True,
+                        "deleted": deleted_count,
+                        "method": method_used
+                    }
+                    account_deleted_count += deleted_count
+                    account_success = True
+                else:
+                    folder_results[folder] = {
+                        "success": False,
+                        "error": delete_response.get("error") or "删除失败"
+                    }
+
+            except Exception as e:
+                _LOGGER.exception("批量删除邮件失败 account_id=%s folder=%s", aid, folder)
+                folder_results[folder] = {
+                    "success": False,
+                    "error": str(e)
+                }
+
+        results.append({
+            "account_id": int(aid),
+            "email": email_addr,
+            "success": account_success,
+            "deleted_count": account_deleted_count,
+            "folders": folder_results
+        })
+
+        if account_success:
+            success_accounts += 1
+            total_deleted_emails += account_deleted_count
+            log_audit(
+                "batch_delete",
+                "email",
+                email_addr,
+                f"批量删除邮件 {account_deleted_count} 封（文件夹: {', '.join(folders)}）"
+            )
+        else:
+            failed_accounts += 1
+
+    summary = {
+        "total_accounts": len(deduped_ids),
+        "success_accounts": success_accounts,
+        "failed_accounts": failed_accounts,
+        "total_deleted_emails": total_deleted_emails,
+    }
+
+    log_audit(
+        "batch_delete_emails",
+        "email",
+        None,
+        f"批量删除邮件操作：total={summary['total_accounts']} success={success_accounts} failed={failed_accounts} deleted={total_deleted_emails}",
+    )
+
+    return jsonify({
+        "success": True,
+        "summary": summary,
+        "results": results,
+    })
+
+
+@login_required
 def api_get_email_detail(email_addr: str, message_id: str) -> Any:
     """获取邮件详情"""
     _t0 = time.monotonic()

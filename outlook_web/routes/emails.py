@@ -15,6 +15,13 @@ def create_blueprint() -> Blueprint:
         view_func=emails_controller.api_batch_get_emails,
         methods=["POST"],
     )
+    
+    # 批量删除多个账号的所有邮件（需放在动态路由前）
+    bp.add_url_rule(
+        "/api/emails/batch-delete",
+        view_func=emails_controller.api_batch_delete_emails,
+        methods=["POST"],
+    )
 
     bp.add_url_rule(
         "/api/emails/<email_addr>",
