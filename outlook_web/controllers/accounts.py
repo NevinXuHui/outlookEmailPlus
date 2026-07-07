@@ -346,16 +346,43 @@ def api_add_account() -> Any:
         return text
 
     def parse_account_string(line: str) -> Optional[Dict[str, str]]:
-        """解析账号字符串（格式：email----password----client_id----refresh_token）"""
+        """解析账号字符串
+        
+        支持两种格式：
+        1. email----password----client_id----refresh_token
+        2. email----password----refresh_token----client_id
+        """
         parts = line.strip().split("----")
         if len(parts) >= 4:
-            return {
-                "email": parts[0].strip(),
-                "password": parts[1],
-                "client_id": parts[2].strip(),
-                # refresh_token 可能包含 '----'，这里把剩余部分合并回去
-                "refresh_token": "----".join(parts[3:]).strip(),
-            }
+            email = parts[0].strip()
+            password = parts[1]
+            field3 = parts[2].strip()
+            # refresh_token 可能包含 '----'，这里把剩余部分合并回去
+            field4_onwards = "----".join(parts[3:]).strip()
+            
+            # 判断格式：通过第3段和第4段的特征识别
+            # 通常 client_id 较短，refresh_token 较长
+            # 如果第3段很长（>100字符），很可能是 refresh_token
+            # 如果第4段很短（<100字符），很可能顺序是 refresh_token----client_id
+            
+            # 优先按原格式解析（email----password----client_id----refresh_token）
+            # 但如果检测到可能是反序，则支持 email----password----refresh_token----client_id
+            if len(field3) > 100 or (len(field4_onwards) < 100 and len(field3) > len(field4_onwards)):
+                # 很可能是：email----password----refresh_token----client_id
+                return {
+                    "email": email,
+                    "password": password,
+                    "client_id": field4_onwards,
+                    "refresh_token": field3,
+                }
+            else:
+                # 标准格式：email----password----client_id----refresh_token
+                return {
+                    "email": email,
+                    "password": password,
+                    "client_id": field3,
+                    "refresh_token": field4_onwards,
+                }
         return None
 
     def is_comment_line(line: str) -> bool:
@@ -648,7 +675,7 @@ def api_add_account() -> Any:
                 errors.append(
                     {
                         "line": line_no,
-                        "error": "格式错误，应为：邮箱----密码----client_id----refresh_token",
+                        "error": "格式错误，支持两种格式：\n1) 邮箱----密码----client_id----refresh_token\n2) 邮箱----密码----refresh_token----client_id",
                     }
                 )
             continue
