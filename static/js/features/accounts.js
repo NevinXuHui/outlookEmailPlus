@@ -168,7 +168,7 @@
                 customFields.style.display = 'none';
                 if (duplicateGroup) duplicateGroup.style.display = '';
                 if (fallbackGroup) fallbackGroup.style.display = '';
-                input.placeholder = translateAppTextLocal('支持混合格式，每行一个账号...\nOutlook: 邮箱----密码----client_id----refresh_token\nIMAP: 邮箱----授权码----provider\n或: 邮箱----密码（自动识别类型）\n临时邮箱: 仅邮箱地址');
+                input.placeholder = translateAppTextLocal('支持混合格式，每行一个账号...\nOutlook: 邮箱----密码----client_id----refresh_token（或反序）\nIMAP: 邮箱----授权码----provider\n或: 邮箱----密码（自动识别类型）\n临时邮箱: 仅邮箱地址');
                 hint.textContent = translateAppTextLocal('智能识别模式：自动按每行格式和邮箱域名判断类型，自动分组');
                 if (getTokenBtn) getTokenBtn.style.display = 'none';
                 if (importGroupSelect) {
@@ -188,8 +188,8 @@
 
             if (p === 'outlook') {
                 customFields.style.display = 'none';
-                input.placeholder = translateAppTextLocal('邮箱----密码----client_id----refresh_token');
-                hint.textContent = translateAppTextLocal('格式：邮箱----密码----client_id----refresh_token，支持批量导入（每行一个）');
+                input.placeholder = translateAppTextLocal('邮箱----密码----client_id----refresh_token（或反序）');
+                hint.textContent = translateAppTextLocal('Outlook 格式：支持两种顺序\n1) 邮箱----密码----client_id----refresh_token\n2) 邮箱----密码----refresh_token----client_id\n支持批量导入（每行一个）');
                 return;
             }
 
