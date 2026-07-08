@@ -228,7 +228,7 @@ def get_default_group_id() -> int:
 
 
 def delete_group(group_id: int) -> bool:
-    """删除分组（将该分组下的邮箱移到默认分组）"""
+    """删除分组（同时删除该分组下的所有邮箱）"""
     db = get_db()
     try:
         row = db.execute("SELECT id, name, is_system FROM groups WHERE id = ?", (group_id,)).fetchone()
@@ -241,10 +241,9 @@ def delete_group(group_id: int) -> bool:
         if group_id == default_group_id or row["name"] == "默认分组":
             return False
 
-        db.execute(
-            "UPDATE accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE group_id = ?",
-            (default_group_id, group_id),
-        )
+        # 删除该分组下的所有邮箱
+        db.execute("DELETE FROM accounts WHERE group_id = ?", (group_id,))
+        # 删除分组
         db.execute("DELETE FROM groups WHERE id = ?", (group_id,))
         db.commit()
         return True

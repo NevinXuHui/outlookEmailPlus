@@ -266,12 +266,12 @@ def api_delete_group(group_id: int) -> Any:
         )
 
     if groups_repo.delete_group(group_id):
-        log_audit("delete", "group", str(group_id), "删除分组并迁移账号到默认分组")
+        log_audit("delete", "group", str(group_id), "删除分组及其下所有邮箱")
         return jsonify(
             {
                 "success": True,
-                "message": "分组已删除，邮箱已移至默认分组",
-                "message_en": "Group deleted and accounts moved to the default group",
+                "message": "分组及其下所有邮箱已删除",
+                "message_en": "Group and all its accounts have been deleted",
             }
         )
     return build_error_response(
