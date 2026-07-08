@@ -10,6 +10,11 @@ def create_blueprint() -> Blueprint:
 
     # 基础 CRUD（已迁移到 controllers）
     bp.add_url_rule("/api/accounts", view_func=accounts_controller.api_get_accounts, methods=["GET"])
+    bp.add_url_rule(
+        "/api/accounts/all-ids",
+        view_func=accounts_controller.api_get_all_account_ids_in_group,
+        methods=["GET"],
+    )
     bp.add_url_rule("/api/accounts", view_func=accounts_controller.api_add_account, methods=["POST"])
     bp.add_url_rule(
         "/api/providers",

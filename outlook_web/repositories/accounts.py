@@ -193,6 +193,34 @@ def _build_account_list_order(sort_by: str, sort_order: str) -> str:
     )
 
 
+def get_all_account_ids_in_group(
+    group_id: Optional[int],
+    search: str = "",
+    tag_ids: Optional[List[int]] = None,
+) -> List[int]:
+    """获取组内所有账号ID列表（不受分页限制），用于全选等场景。"""
+    db = get_db()
+    normalized_tag_ids = list(tag_ids or [])
+
+    where_sql, params = _build_account_list_where(
+        group_id=group_id,
+        search=search,
+        tag_ids=normalized_tag_ids,
+    )
+
+    rows = db.execute(
+        f"""
+        SELECT a.id
+        FROM accounts a
+        {where_sql}
+        ORDER BY a.id ASC
+        """,
+        params,
+    ).fetchall()
+
+    return [int(row["id"]) for row in rows]
+
+
 def load_accounts_page(
     group_id: Optional[int] = None,
     *,

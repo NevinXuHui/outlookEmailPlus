@@ -254,6 +254,44 @@ def api_get_accounts() -> Any:
 
 
 @login_required
+def api_get_all_account_ids_in_group() -> Any:
+    """获取组内所有账号ID列表（不受分页限制），用于跨页全选等场景"""
+    group_id = request.args.get("group_id", type=int)
+    search = (request.args.get("search", type=str) or "").strip()
+    
+    raw_tag_values = request.args.getlist("tag_id")
+    raw_tag_values.extend((request.args.get("tag_ids", type=str) or "").split(","))
+    tag_ids: List[int] = []
+    seen_tag_ids = set()
+    for raw_value in raw_tag_values:
+        raw_text = str(raw_value or "").strip()
+        if not raw_text:
+            continue
+        try:
+            tag_id = int(raw_text)
+        except ValueError:
+            continue
+        if tag_id <= 0 or tag_id in seen_tag_ids:
+            continue
+        seen_tag_ids.add(tag_id)
+        tag_ids.append(tag_id)
+    
+    account_ids = accounts_repo.get_all_account_ids_in_group(
+        group_id=group_id,
+        search=search,
+        tag_ids=tag_ids,
+    )
+    
+    return jsonify(
+        {
+            "success": True,
+            "account_ids": account_ids,
+            "total_count": len(account_ids),
+        }
+    )
+
+
+@login_required
 def api_get_account(account_id: int) -> Any:
     """获取单个账号详情"""
     account = accounts_repo.get_account_by_id(account_id)

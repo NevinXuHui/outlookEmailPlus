@@ -222,8 +222,8 @@
                             <button class="btn btn-sm sort-btn active" data-sort="refresh_time" onclick="sortAccounts('refresh_time')">🕐 刷新时间</button>
                             <button class="btn btn-sm sort-btn" data-sort="email" onclick="sortAccounts('email')">📧 邮箱名</button>
                             <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
-                                <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" style="cursor:pointer;">
-                                <label for="selectAllCheckbox" style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;">全选</label>
+                                <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" style="cursor:pointer;" title="全选当前分组的所有邮箱（跨页）">
+                                <label for="selectAllCheckbox" style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;" title="全选当前分组的所有邮箱（跨页）">全选</label>
                             </div>
                         </div>
                         <div id="tagFilterContainer" style="padding:6px 12px;border-bottom:1px solid var(--border-light);display:none;flex-wrap:wrap;gap:6px;"></div>
@@ -329,7 +329,7 @@
                         <div class="mail-list-wrap">
                             <div class="mail-head">
                                 <div class="compact-header-cell compact-header-cell-selection">
-                                    <input type="checkbox" id="compactSelectAllCheckbox" onclick="toggleSelectAll()">
+                                    <input type="checkbox" id="compactSelectAllCheckbox" onclick="toggleSelectAll()" title="全选当前分组的所有邮箱（跨页）">
                                 </div>
                                 <div class="compact-header-cell">邮箱</div>
                                 <div class="compact-header-cell">验证码</div>
