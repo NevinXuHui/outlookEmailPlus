@@ -347,25 +347,64 @@
                 </div>
             `}).join('');
 
-            // ===== 分页控件：总账号数超过一页时显示 =====
+            // ===== 增强的分页控件：显示页码按钮、快速跳转等功能 =====
             if (totalPages > 1) {
                 const paginationEl = document.createElement('div');
                 paginationEl.className = 'account-pagination';
-                paginationEl.innerHTML = `
-                    <button class="page-btn page-btn-prev"
-                            onclick="goToAccountPage(${currentAccountPage - 1})"
-                            ${currentAccountPage <= 1 ? 'disabled' : ''}>
-                        ◀
-                    </button>
-                    <span class="page-info">
-                        ${currentAccountPage} / ${totalPages} ${translateAppTextLocal('页')} &nbsp;·&nbsp; ${translateAppTextLocal('共')} ${totalAccounts} ${translateAppTextLocal('个账号')}
-                    </span>
-                    <button class="page-btn page-btn-next"
-                            onclick="goToAccountPage(${currentAccountPage + 1})"
-                            ${currentAccountPage >= totalPages ? 'disabled' : ''}>
-                        ▶
-                    </button>
+                paginationEl.style.cssText = 'display:flex;flex-direction:column;gap:12px;align-items:center;margin-top:16px;padding:12px;background:var(--bg-primary);border-radius:8px;';
+                
+                // 第一行：页码信息和快速跳转
+                const infoRow = `
+                    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center;width:100%;">
+                        <span style="color:var(--text-muted);font-size:0.85rem;">
+                            ${translateAppTextLocal('共')} <strong style="color:var(--primary);">${totalAccounts}</strong> ${translateAppTextLocal('个账号')} · 
+                            ${translateAppTextLocal('第')} <strong style="color:var(--primary);">${currentAccountPage}</strong> / ${totalPages} ${translateAppTextLocal('页')}
+                        </span>
+                        <div style="display:flex;gap:4px;align-items:center;">
+                            <span style="color:var(--text-muted);font-size:0.85rem;">${translateAppTextLocal('跳转至')}</span>
+                            <input type="number" id="quickJumpInput" min="1" max="${totalPages}" 
+                                placeholder="${currentAccountPage}"
+                                style="width:60px;height:28px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;text-align:center;font-size:0.85rem;"
+                                onkeypress="if(event.key==='Enter') quickJumpToPage()"
+                            />
+                            <button onclick="quickJumpToPage()" 
+                                style="height:28px;padding:2px 12px;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;transition:opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.8'"
+                                onmouseout="this.style.opacity='1'"
+                            >${translateAppTextLocal('跳转')}</button>
+                        </div>
+                    </div>
                 `;
+                
+                // 第二行：上一页、页码按钮、下一页
+                const paginationButtons = buildAccountPagination(currentAccountPage, totalPages);
+                const navRow = `
+                    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center;">
+                        <button class="page-btn page-btn-prev"
+                                onclick="goToAccountPage(${currentAccountPage - 1})"
+                                style="min-width:70px;height:32px;padding:4px 12px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:0.85rem;transition:all 0.2s;display:flex;align-items:center;gap:4px;justify-content:center;"
+                                ${currentAccountPage <= 1 ? 'disabled' : ''}
+                                onmouseover="if(!this.disabled) this.style.background='var(--bg-hover)'"
+                                onmouseout="if(!this.disabled) this.style.background='var(--bg-secondary)'"
+                        >
+                            <span>◀</span>
+                            <span>${translateAppTextLocal('上一页')}</span>
+                        </button>
+                        ${paginationButtons}
+                        <button class="page-btn page-btn-next"
+                                onclick="goToAccountPage(${currentAccountPage + 1})"
+                                style="min-width:70px;height:32px;padding:4px 12px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:0.85rem;transition:all 0.2s;display:flex;align-items:center;gap:4px;justify-content:center;"
+                                ${currentAccountPage >= totalPages ? 'disabled' : ''}
+                                onmouseover="if(!this.disabled) this.style.background='var(--bg-hover)'"
+                                onmouseout="if(!this.disabled) this.style.background='var(--bg-secondary)'"
+                        >
+                            <span>${translateAppTextLocal('下一页')}</span>
+                            <span>▶</span>
+                        </button>
+                    </div>
+                `;
+                
+                paginationEl.innerHTML = infoRow + navRow;
                 container.appendChild(paginationEl);
             }
 
@@ -375,6 +414,50 @@
             if (typeof reapplyAllPollUI === 'function') {
                 reapplyAllPollUI();
             }
+        }
+
+        // 构建增强的分页导航（显示页码按钮）
+        function buildAccountPagination(current, total) {
+            if (total <= 1) return '';
+
+            const delta = 2; // 当前页前后各显示多少页
+            const range = [];
+            const left = Math.max(2, current - delta);
+            const right = Math.min(total - 1, current + delta);
+
+            // 始终显示首页
+            range.push(1);
+            
+            // 如果左边界不是紧邻首页，添加省略号
+            if (left > 2) range.push('...');
+            
+            // 添加当前页附近的页码
+            for (let i = left; i <= right; i++) {
+                range.push(i);
+            }
+            
+            // 如果右边界不是紧邻末页，添加省略号
+            if (right < total - 1) range.push('...');
+            
+            // 始终显示末页
+            if (total > 1) range.push(total);
+
+            return range.map(p => {
+                if (p === '...') {
+                    return `<span style="color:var(--text-muted);padding:0 6px;font-size:0.9rem;">…</span>`;
+                }
+                const active = p === current;
+                const btnStyle = active 
+                    ? 'background:var(--primary);color:white;border-color:var(--primary);font-weight:600;' 
+                    : 'background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);';
+                return `<button class="page-number-btn" 
+                    onclick="goToAccountPage(${p})" 
+                    style="${btnStyle}min-width:32px;height:32px;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:0.85rem;transition:all 0.2s;"
+                    ${active ? 'disabled' : ''}
+                    onmouseover="if(!this.disabled) this.style.background='var(--bg-hover)'"
+                    onmouseout="if(!this.disabled) this.style.background='var(--bg-secondary)'"
+                >${p}</button>`;
+            }).join('');
         }
 
         // 跳转到指定账号分页
@@ -391,6 +474,19 @@
             containers.forEach(container => {
                 container.scrollTop = 0;
             });
+        }
+        
+        // 快速跳转到指定页
+        function quickJumpToPage() {
+            const input = document.getElementById('quickJumpInput');
+            if (!input) return;
+            const page = parseInt(input.value, 10);
+            const totalPages = Number(getAccountListMeta().total_pages || 0);
+            if (isNaN(page) || page < 1 || page > totalPages) {
+                showToast(translateAppTextLocal('请输入有效的页码 (1-${total})').replace('${total}', totalPages), 'warning');
+                return;
+            }
+            goToAccountPage(page);
         }
 
         // 排序相关变量
@@ -672,7 +768,7 @@
 
         // 删除分组
         async function deleteGroup(groupId) {
-            if (!confirm('确定要删除该分组吗？分组下的邮箱将移至默认分组。')) {
+            if (!confirm('确定要删除该分组吗？分组下的所有邮箱也将被删除，此操作不可恢复！')) {
                 return;
             }
 
@@ -706,13 +802,48 @@
                 : document.getElementById('selectAllCheckbox');
 
             if (selectAllCheckbox.checked) {
-                selectAllAccounts();
+                selectAllAccountsInGroup();
             } else {
                 unselectAllAccounts();
             }
         }
 
-        // 全选当前分组所有账号
+        // 全选当前分组内的所有账号（跨页）
+        async function selectAllAccountsInGroup() {
+            try {
+                // 获取当前分组的所有账号ID（使用专门的API端点，不受分页限制）
+                const response = await fetch(`/api/accounts/all-ids?group_id=${currentGroupId}`);
+                const data = await response.json();
+                
+                if (data.success && Array.isArray(data.account_ids)) {
+                    // 添加所有账号ID到选中集合
+                    data.account_ids.forEach(accountId => {
+                        selectedAccountIds.add(accountId);
+                    });
+                    
+                    // 更新当前页面的复选框状态
+                    const checkboxes = getActiveAccountCheckboxes();
+                    checkboxes.forEach(cb => {
+                        if (selectedAccountIds.has(parseInt(cb.value))) {
+                            cb.checked = true;
+                        }
+                    });
+                    
+                    updateBatchActionBar();
+                    updateSelectAllCheckbox();
+                    
+                    // 显示提示信息
+                    const totalSelected = selectedAccountIds.size;
+                    const message = translateAppTextLocal('已选择分组内所有 ${totalSelected} 个邮箱').replace('${totalSelected}', totalSelected);
+                    showToast(message);
+                }
+            } catch (error) {
+                console.error('全选失败:', error);
+                showToast(translateAppTextLocal('全选失败，请重试'), 'error');
+            }
+        }
+
+        // 全选当前页面所有账号（保留旧功能作为备用）
         function selectAllAccounts() {
             const checkboxes = getActiveAccountCheckboxes();
             checkboxes.forEach(cb => {
