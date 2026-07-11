@@ -1,0 +1,20 @@
+{
+  "name": "skymail",
+  "version": "1.0.0",
+  "label": "SkyMail",
+  "author": "OutlookMail Plus",
+  "description": "SkyMail 临时邮箱服务集成插件",
+  "provider_class": "SkymailTempMailProvider",
+  "module_path": "skymail",
+  "requires_config": true,
+  "capabilities": {
+    "create_mailbox": true,
+    "delete_mailbox": false,
+    "list_messages": true,
+    "get_message_detail": true,
+    "delete_message": false,
+    "clear_messages": false
+  },
+  "homepage": "https://doc.skymail.ink",
+  "documentation": "https://doc.skymail.ink/api/api-doc.html"
+}
