@@ -94,6 +94,7 @@
             currentGroupId = groupId;
             currentAccountPage = 1;  // 切换分组时重置到第 1 页
             currentAccountSearchQuery = '';
+            showAnomaliesOnly = false;  // 切换分组时重置异常筛选
 
             // 切换分组时停止所有正在运行的轮询（避免跨分组轮询堆积）
             if (typeof stopAllPolls === 'function') {
@@ -104,6 +105,12 @@
             const searchInput = document.getElementById('globalSearch');
             if (searchInput) {
                 searchInput.value = '';
+            }
+
+            // 重置异常筛选复选框
+            const anomaliesCheckbox = document.getElementById('showAnomaliesCheckbox');
+            if (anomaliesCheckbox) {
+                anomaliesCheckbox.checked = false;
             }
 
             // 重置右侧邮件列 UI（清除上一个分组的残留状态）
@@ -499,6 +506,9 @@
         let currentAccountSearchQuery = '';
         const accountListMetaCache = {};
 
+        // 异常筛选状态
+        let showAnomaliesOnly = false;
+
         function getSelectedTagFilterIds() {
             return Array.from(document.querySelectorAll('.tag-filter-checkbox:checked'))
                 .map(cb => parseInt(cb.value, 10))
@@ -523,6 +533,11 @@
             getSelectedTagFilterIds().forEach(tagId => {
                 params.append('tag_id', String(tagId));
             });
+
+            // 添加异常筛选参数
+            if (typeof showAnomaliesOnly !== 'undefined' && showAnomaliesOnly) {
+                params.set('show_anomalies', 'true');
+            }
 
             return params.toString();
         }
@@ -581,6 +596,17 @@
 
             if (currentGroupId) {
                 currentAccountPage = 1;  // 排序时重置到第 1 页
+                loadAccountsByGroup(currentGroupId, true, 1);
+            }
+        }
+
+        // 切换异常邮箱筛选
+        function toggleShowAnomalies() {
+            const checkbox = document.getElementById('showAnomaliesCheckbox');
+            showAnomaliesOnly = checkbox ? checkbox.checked : false;
+
+            if (currentGroupId) {
+                currentAccountPage = 1;  // 筛选时重置到第 1 页
                 loadAccountsByGroup(currentGroupId, true, 1);
             }
         }

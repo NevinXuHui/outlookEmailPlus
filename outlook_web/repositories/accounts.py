@@ -135,6 +135,7 @@ def _build_account_list_where(
     group_id: Optional[int],
     search: str,
     tag_ids: List[int],
+    show_anomalies: bool = False,
 ) -> Tuple[str, List[Any]]:
     where_clauses: List[str] = []
     params: List[Any] = []
@@ -173,6 +174,34 @@ def _build_account_list_where(
             )
             """)
         params.extend(normalized_tag_ids)
+
+    # 异常邮箱筛选：刷新失败 + Token失效 + 状态异常
+    if show_anomalies:
+        where_clauses.append("""
+            (
+                -- 状态异常：inactive 或 disabled
+                a.status IN ('inactive', 'disabled')
+                OR EXISTS (
+                    -- 最近一次刷新失败
+                    SELECT 1
+                    FROM account_refresh_logs l
+                    INNER JOIN (
+                        SELECT account_id, MAX(id) AS max_id
+                        FROM account_refresh_logs
+                        GROUP BY account_id
+                    ) latest ON l.account_id = latest.account_id AND l.id = latest.max_id
+                    WHERE l.account_id = a.id
+                      AND l.status = 'failed'
+                      AND (
+                          -- Token 已失效
+                          LOWER(COALESCE(l.error_message, '')) LIKE '%invalid_grant%'
+                          OR LOWER(COALESCE(l.error_message, '')) LIKE '%aadsts70000%'
+                          -- 或任何刷新失败
+                          OR 1=1
+                      )
+                )
+            )
+            """)
 
     if not where_clauses:
         return "", params
@@ -230,6 +259,7 @@ def load_accounts_page(
     tag_ids: Optional[List[int]] = None,
     sort_by: str = "refresh_time",
     sort_order: str = "asc",
+    show_anomalies: bool = False,
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """按条件分页加载账号列表，保留 load_accounts 的全量语义给后台流程使用。"""
     db = get_db()
@@ -241,6 +271,7 @@ def load_accounts_page(
         group_id=group_id,
         search=search,
         tag_ids=normalized_tag_ids,
+        show_anomalies=show_anomalies,
     )
     order_sql = _build_account_list_order(sort_by, sort_order)
 

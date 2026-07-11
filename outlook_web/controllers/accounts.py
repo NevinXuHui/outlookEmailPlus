@@ -123,13 +123,14 @@ def _outlook_basic_auth_import_error() -> str:
 
 @login_required
 def api_get_accounts() -> Any:
-    """获取账号列表（支持分页、分组内搜索、标签筛选与排序）"""
+    """获取账号列表（支持分页、分组内搜索、标签筛选、异常筛选与排序）"""
     group_id = request.args.get("group_id", type=int)
     page = request.args.get("page", default=1, type=int) or 1
     page_size = request.args.get("page_size", default=50, type=int) or 50
     search = (request.args.get("search", type=str) or "").strip()
     sort_by = (request.args.get("sort_by", type=str) or "refresh_time").strip().lower()
     sort_order = (request.args.get("sort_order", type=str) or "asc").strip().lower()
+    show_anomalies = _parse_bool_flag(request.args.get("show_anomalies"), default=False)
 
     if page < 1:
         page = 1
@@ -164,6 +165,7 @@ def api_get_accounts() -> Any:
         tag_ids=tag_ids,
         sort_by=sort_by,
         sort_order=sort_order,
+        show_anomalies=show_anomalies,
     )
     total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
 
