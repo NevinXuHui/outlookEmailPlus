@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>清除缓存指南</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        .step { background: #f0f0f0; padding: 15px; margin: 10px 0; border-radius: 5px; }
+        .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 10px 0; }
+        code { background: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>🔧 浏览器缓存清除指南</h1>
+    
+    <div class="warning">
+        <strong>⚠️ 重要：</strong>你当前看到的是旧版本的页面（有 "+ 添加代理" 按钮）。新版本应该是一个多行文本框。
+    </div>
+
+    <h2>方法1：强制刷新（最快）</h2>
+    <div class="step">
+        <strong>Windows/Linux:</strong> 按住 <code>Ctrl + Shift</code>，然后按 <code>R</code><br>
+        <strong>Mac:</strong> 按住 <code>Cmd + Shift</code>，然后按 <code>R</code>
+    </div>
+
+    <h2>方法2：清除浏览器缓存（推荐）</h2>
+    <div class="step">
+        <strong>Chrome/Edge:</strong>
+        <ol>
+            <li>按 <code>Ctrl + Shift + Delete</code> (Mac: <code>Cmd + Shift + Delete</code>)</li>
+            <li>时间范围：选择 <strong>"全部时间"</strong></li>
+            <li>勾选 <strong>"缓存的图片和文件"</strong></li>
+            <li>点击 <strong>"清除数据"</strong></li>
+            <li><strong>完全关闭浏览器</strong>（不是只关标签页）</li>
+            <li>重新打开浏览器，访问 http://localhost:5000</li>
+        </ol>
+    </div>
+
+    <h2>方法3：无痕模式验证（立即测试）</h2>
+    <div class="step">
+        <strong>Chrome/Edge:</strong> <code>Ctrl + Shift + N</code><br>
+        <strong>Firefox:</strong> <code>Ctrl + Shift + P</code><br>
+        <br>
+        在无痕窗口中访问 http://localhost:5000，你应该能立即看到新版本（多行输入框）。
+    </div>
+
+    <h2>✅ 如何验证更新成功</h2>
+    <div class="step">
+        在设置页面中，"代理地址池" 部分应该显示：
+        <ul>
+            <li>✅ 一个<strong>多行文本框</strong>（高度较高，可以输入多行）</li>
+            <li>✅ 提示文本："每行一个代理地址，支持多个代理轮换"</li>
+            <li>✅ 按 Enter 键会<strong>换行</strong>（而不是提交表单）</li>
+            <li>❌ <strong>没有</strong> "+ 添加代理" 按钮</li>
+        </ul>
+    </div>
+
+    <script>
+        // 自动打开控制台检测
+        console.log('%c🔍 浏览器缓存检测', 'font-size: 16px; font-weight: bold; color: #2196F3;');
+        console.log('请在设置页面按 F12，在 Console 中运行以下代码：');
+        console.log('%cdocument.getElementById("telegramProxyUrl").tagName', 'background: #f0f0f0; padding: 5px;');
+        console.log('如果返回 "TEXTAREA" = ✅ 新版本');
+        console.log('如果返回 "INPUT" = ❌ 旧版本（缓存未清除）');
+    </script>
+</body>
+</html>
