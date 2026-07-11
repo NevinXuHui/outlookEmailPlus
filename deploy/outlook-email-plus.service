@@ -1,0 +1,46 @@
+[Unit]
+Description=Outlook Email Plus
+Documentation=https://github.com/zeropointsix/outlook-email-plus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__APP_DIR__
+
+# 从项目 .env 注入配置（SECRET_KEY / LOGIN_PASSWORD 等）
+# 端口固定 5000；GUNICORN_WORKERS 保持 1，避免调度器重复启动
+EnvironmentFile=-__APP_DIR__/.env
+
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PORT=5000
+Environment=GUNICORN_BIND=0.0.0.0:5000
+Environment=GUNICORN_WORKERS=1
+Environment=PATH=__APP_DIR__/venv/bin:/usr/local/bin:/usr/bin:/bin
+
+# 启动前再清一次 5000 端口残留（开发 Flask / 旧 gunicorn）
+ExecStartPre=-/bin/bash -c 'pids=$(lsof -tiTCP:5000 -sTCP:LISTEN 2>/dev/null || true); if [ -n "$pids" ]; then echo "clearing port 5000: $pids"; kill $pids 2>/dev/null || true; sleep 1; kill -9 $pids 2>/dev/null || true; fi'
+
+# 官方生产入口：scripts/start-gunicorn.sh → web_outlook_app:app
+ExecStart=/bin/bash __APP_DIR__/scripts/start-gunicorn.sh
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# 基础加固（不启用 ProtectHome：安装目录常在 /root 或 /home 下）
+NoNewPrivileges=true
+PrivateTmp=true
+
+# 日志走 journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outlook-email-plus
+
+[Install]
+WantedBy=multi-user.target

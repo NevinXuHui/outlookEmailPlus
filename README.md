@@ -237,6 +237,52 @@ pip install -r requirements.txt
 python web_outlook_app.py
 ```
 
+也可使用一键脚本（创建 venv、装依赖、启动 Flask）：
+
+```bash
+./run.sh
+```
+
+### 裸机安装 + systemd（生产）
+
+适合不使用 Docker、直接跑在 Linux 主机上的场景。安装脚本会创建 `venv`、安装依赖与 gunicorn、生成 `.env`（自动补全 `SECRET_KEY`），并可注册 systemd 服务。
+
+```bash
+# 1) 仅安装依赖与环境（不写 systemd）
+./install.sh
+
+# 2) 安装并注册 systemd 服务（需要 root）
+sudo ./install.sh --systemd
+
+# 常用运维
+sudo systemctl status  outlook-email-plus
+sudo systemctl restart outlook-email-plus
+sudo journalctl -u outlook-email-plus -f
+
+# 仅更新 unit / 卸载服务
+sudo ./install.sh --systemd-only
+sudo ./install.sh --uninstall
+./install.sh --status
+```
+
+可选环境变量：
+
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `APP_DIR` | 安装目录 | 脚本所在目录 |
+| `APP_USER` / `APP_GROUP` | 运行用户/组 | 当前用户 |
+| `SKIP_PIP=1` | 跳过 pip 安装 | 关闭 |
+| `NO_START=1` | 装好 systemd 后不自动启动 | 关闭 |
+
+说明：
+
+- **端口固定 `5000`**（`PORT` / `GUNICORN_BIND=0.0.0.0:5000`）
+- **启动前自动清理**占用 5000 的旧进程（`run.sh` / `start-gunicorn.sh` / systemd `ExecStartPre`）
+- 生产入口与 Docker 一致：`scripts/start-gunicorn.sh` → `web_outlook_app:app`
+- **保持 `GUNICORN_WORKERS=1`**（默认），避免后台调度器多实例重复启动
+- 单元模板：`deploy/outlook-email-plus.service`
+- 一键更新（Watchtower）仅 docker-compose 部署可用；裸机请自行 `git pull` 后 `./install.sh` + `systemctl restart`
+
 ### 运行测试
 
 ```bash
