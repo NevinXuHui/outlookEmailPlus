@@ -3,14 +3,16 @@ services:
     # 模式一（默认）：直接拉取远端镜像（适合大多数用户）
     # 镜像标签可通过 .env 的 IMAGE_TAG 控制（默认 latest）
     # GHCR 镜像（国内网络推荐，访问更稳定）：
-    image: ghcr.io/zeropointsix/outlook-email-plus:${IMAGE_TAG:-latest}
+    # image: ghcr.io/zeropointsix/outlook-email-plus:${IMAGE_TAG:-latest}
     # Docker Hub 镜像（如需切换取消注释，并注释上行）：
     # image: guangshanshui/outlook-email-plus:${IMAGE_TAG:-latest}
 
-    # 模式二（开发者）：本地构建（取消注释 build，并按需注释 image）
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    # 模式二（开发者）：本地构建（已启用）
+    # 先 docker compose pull 远端作对照/回退，再本地 build 打标签覆盖运行
+    image: outlook-email-plus:local
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     container_name: outlook-email-plus
 
@@ -29,8 +31,8 @@ services:
       WATCHTOWER_HTTP_API_TOKEN: "${WATCHTOWER_HTTP_API_TOKEN:-outlook-mail-plus-watchtower-default}"
       # Gunicorn 并发：默认保持单 worker，使用多线程承载同步读信/等待接口，避免后台调度器重复启动
       GUNICORN_WORKERS: "${GUNICORN_WORKERS:-1}"
-      GUNICORN_THREADS: "${GUNICORN_THREADS:-8}"
-      GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-120}"
+      GUNICORN_THREADS: "${GUNICORN_THREADS:-32}"
+      GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-600}"
       # OAuth Token 工具（可选；如需显式覆盖，可在 .env 中配置下列变量）
       # OAUTH_TOOL_ENABLED: "true"
       # OAUTH_CLIENT_ID: ""
@@ -79,7 +81,9 @@ services:
       - outlook-net
 
   watchtower:
-    image: containrrr/watchtower:1.7.1
+    # containrrr/watchtower:1.7.1 在较新 Docker 上会因 API 1.25 过旧失败；
+    # 使用维护分支 nickfedor/watchtower（兼容 Docker API >= 1.40）
+    image: nickfedor/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     volumes:

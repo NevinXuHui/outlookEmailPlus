@@ -4,8 +4,8 @@ set -eu
 # 固定监听端口（与 .env PORT / 文档一致）
 : "${APP_PORT:=5000}"
 : "${GUNICORN_WORKERS:=1}"
-: "${GUNICORN_THREADS:=8}"
-: "${GUNICORN_TIMEOUT:=120}"
+: "${GUNICORN_THREADS:=32}"
+: "${GUNICORN_TIMEOUT:=600}"
 : "${GUNICORN_BIND:=0.0.0.0:${APP_PORT}}"
 : "${GUNICORN_ACCESS_LOGFILE:=-}"
 
