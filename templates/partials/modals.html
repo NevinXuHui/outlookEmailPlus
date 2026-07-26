@@ -510,6 +510,63 @@
     </div>
 
     <!-- 批量移动分组模态框 -->
+    <!-- 批量拉取邮件（可选：按发件人分流到分组） -->
+    <div class="modal" id="batchFetchModal" onclick="if(event.target === this) hideBatchFetchModal()">
+        <div class="modal-content" style="width: 460px; max-width: 92vw;">
+            <div class="modal-header">
+                <h3>批量拉取邮件</h3>
+                <button class="modal-close" onclick="hideBatchFetchModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">已选账号</label>
+                    <div id="batchFetchSelectedCount" style="font-size:0.85rem;color:var(--text-muted);">0 个账号</div>
+                    <div class="form-hint">将拉取每个账号的收件箱 + 垃圾箱（各最近 N 封，可配置）</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">特定发件人（可选）</label>
+                    <input type="text" class="form-input" id="batchFetchSenderInput" placeholder="例如：noreply@openai.com 或 openai" autocomplete="off">
+                    <div class="form-hint">支持部分匹配（忽略大小写）。多个条件用逗号/空格/换行分隔，命中任一即算命中。命中/未命中分流需填写此项。</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">命中发件人时移动到</label>
+                    <select class="form-select" id="batchFetchMatchedGroupSelect">
+                        <option value="">不移动</option>
+                    </select>
+                    <div class="form-hint">拉取成功且邮件中匹配到特定发件人的账号。</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">无匹配时移动到</label>
+                    <select class="form-select" id="batchFetchUnmatchedGroupSelect">
+                        <option value="">不移动</option>
+                    </select>
+                    <div class="form-hint">拉取成功但未匹配到特定发件人的账号。</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">拉取失败时移动到</label>
+                    <select class="form-select" id="batchFetchFailedGroupSelect">
+                        <option value="">不移动</option>
+                    </select>
+                    <div class="form-hint">Token 失效、权限错误、限流等拉取失败的账号。不依赖发件人条件。</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">每个邮箱拉取邮件数</label>
+                    <input type="number" class="form-input" id="batchFetchTopInput" min="1" step="1" value="15">
+                    <div class="form-hint">每个账号在收件箱、垃圾箱分别拉取最近 N 封（默认 15，无上限）。</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">并发数</label>
+                    <input type="number" class="form-input" id="batchFetchConcurrencyInput" min="1" step="1" value="5">
+                    <div class="form-hint">同时拉取的账号数（默认 5，无上限）。由服务端线程池真正并行，不受浏览器连接数限制。过高可能触发上游限流或超时。</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideBatchFetchModal()">取消</button>
+                <button class="btn btn-primary" onclick="confirmBatchFetchWithFilter()">开始拉取</button>
+            </div>
+        </div>
+    </div>
+
     <div class="modal" id="batchMoveGroupModal" onclick="if(event.target === this) hideBatchMoveGroupModal()">
         <div class="modal-content" style="width: 400px;">
             <div class="modal-header">

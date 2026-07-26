@@ -2,7 +2,7 @@
 
 目标：
   - 验证标准模式“批量拉取邮件”入口与函数骨架
-  - 验证紧凑模式批量栏不被顺带扩展
+  - 验证紧凑模式多选栏提供“获取邮件”入口
   - 验证现有批量动作与单账号邮件语义保持不变
 
 注意（RED 阶段）：
@@ -65,16 +65,23 @@ class BatchFetchFrontendContractTests(unittest.TestCase):
             ),
         )
 
-    def test_compact_batch_action_bar_does_not_contain_batch_fetch_button(self):
-        """PRD 3.2 / TDD A-07：紧凑模式批量栏不应出现批量拉取按钮。"""
+    def test_compact_batch_action_bar_contains_fetch_emails_button(self):
+        """紧凑模式多选栏应提供获取邮件入口（复用标准模式批量拉取逻辑）。"""
         html = self._get_index_html()
 
         compact_start = html.index('id="compactBatchActionBar"')
         temp_mail_start = html.index("<!-- ===== Page: Temp Emails ===== -->")
         compact_section = html[compact_start:temp_mail_start]
 
+        self.assertIn("showBatchFetchConfirm()", compact_section)
+        self.assertRegex(
+            compact_section,
+            re.compile(
+                r'<button class="btn-inline ghost" onclick="showBatchFetchConfirm\(\)">\s*获取邮件\s*</button>'
+            ),
+        )
+        # 标准模式长文案不进入紧凑栏，避免占用横向空间
         self.assertNotIn("批量拉取邮件", compact_section)
-        self.assertNotIn("showBatchFetchConfirm()", compact_section)
 
     def test_main_js_contains_batch_fetch_entry_functions(self):
         """TDD A-02,A-03,A-04：main.js 应声明批量拉取的入口与核心函数骨架。"""
@@ -82,6 +89,8 @@ class BatchFetchFrontendContractTests(unittest.TestCase):
 
         self.assertIn("function showBatchFetchConfirm()", js)
         self.assertIn("function resolveSelectedAccountsForBatchFetch()", js)
+        self.assertIn("selectedAccountIds 为唯一真相源", js)
+        self.assertIn("Math.max(accounts.length, selectedCount)", js)
         self.assertIn("async function batchFetchSelectedEmails(", js)
         self.assertIn("async function fetchLatestFoldersForAccount(", js)
         self.assertIn("function cacheBatchFetchedFolder(", js)
@@ -145,6 +154,29 @@ class BatchFetchFrontendContractTests(unittest.TestCase):
         self.assertIn("selectedAccountIds.add(accountId);", js)
         self.assertIn("selectedAccountIds.delete(accountId);", js)
         self.assertIn("countSpan.textContent = formatSelectedItemsLabel(selectedAccountIds.size);", js)
+
+
+    def test_batch_fetch_modal_supports_sender_filter_and_move(self):
+        """批量拉取支持按发件人匹配，无匹配则移动分组。"""
+        html = self._get_index_html()
+        # modals are embedded in index via partials
+        self.assertIn('id="batchFetchModal"', html)
+        self.assertIn('id="batchFetchSenderInput"', html)
+        self.assertIn('batchFetchMatchedGroupSelect', html)
+        self.assertIn('batchFetchUnmatchedGroupSelect', html)
+        self.assertIn('batchFetchFailedGroupSelect', html)
+        self.assertIn('id="batchFetchConcurrencyInput"', html)
+        self.assertIn('confirmBatchFetchWithFilter()', html)
+
+        js = self._get_main_js()
+        self.assertIn('function accountHasMatchingSender(', js)
+        self.assertIn('function parseSenderMatchers(', js)
+        self.assertIn('moveUnmatchedToGroupId', js)
+        self.assertIn('moveMatchedToGroupId', js)
+        self.assertIn('moveFailedToGroupId', js)
+        self.assertIn('concurrency', js)
+        self.assertIn('getBatchFetchConcurrency', js)
+        self.assertIn('/api/accounts/batch-update-group', js)
 
 
 if __name__ == "__main__":

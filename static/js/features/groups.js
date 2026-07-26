@@ -821,77 +821,153 @@
 
         // ==================== 全选功能 ====================
 
+        function getSelectAllMenus() {
+            return [
+                document.getElementById('selectAllMenu'),
+                document.getElementById('compactSelectAllMenu')
+            ].filter(Boolean);
+        }
+
+        function closeSelectAllMenus() {
+            getSelectAllMenus().forEach(menu => {
+                menu.open = false;
+            });
+        }
+
+        function openSelectAllMenu() {
+            const menu = mailboxViewMode === 'compact'
+                ? document.getElementById('compactSelectAllMenu')
+                : document.getElementById('selectAllMenu');
+            if (!menu) {
+                return;
+            }
+            getSelectAllMenus().forEach(item => {
+                item.open = item === menu;
+            });
+        }
+
         // 全选/取消全选账号（当前分组）
-        function toggleSelectAll() {
+        // 勾选时弹出「当前页 / 全部」；取消勾选时清空全部选中
+        function toggleSelectAll(event) {
             const selectAllCheckbox = mailboxViewMode === 'compact'
                 ? document.getElementById('compactSelectAllCheckbox')
                 : document.getElementById('selectAllCheckbox');
+            if (!selectAllCheckbox) {
+                return;
+            }
 
             if (selectAllCheckbox.checked) {
-                selectAllAccountsInGroup();
+                // 先回退勾选状态，待用户选择范围后再更新
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = selectedAccountIds.size > 0;
+                openSelectAllMenu();
+                if (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
             } else {
+                closeSelectAllMenus();
                 unselectAllAccounts();
             }
         }
 
-        // 全选当前分组内的所有账号（跨页）
+        // 全选当前分组内的所有账号（跨页，跟随搜索/标签筛选）
         async function selectAllAccountsInGroup() {
+            closeSelectAllMenus();
+            if (currentGroupId === null || currentGroupId === undefined) {
+                showToast(translateAppTextLocal('请先选择分组'), 'error');
+                return;
+            }
+
             try {
-                // 获取当前分组的所有账号ID（使用专门的API端点，不受分页限制）
-                const response = await fetch(`/api/accounts/all-ids?group_id=${currentGroupId}`);
+                const params = new URLSearchParams();
+                params.set('group_id', String(currentGroupId));
+
+                const normalizedSearch = String(currentAccountSearchQuery || '').trim();
+                if (normalizedSearch) {
+                    params.set('search', normalizedSearch);
+                }
+                getSelectedTagFilterIds().forEach(tagId => {
+                    params.append('tag_id', String(tagId));
+                });
+
+                // 获取当前筛选条件下的全部账号ID（不受分页限制）
+                const response = await fetch(`/api/accounts/all-ids?${params.toString()}`);
                 const data = await response.json();
-                
+
                 if (data.success && Array.isArray(data.account_ids)) {
-                    // 添加所有账号ID到选中集合
+                    // 用服务端完整 ID 列表覆盖选中集合（规范化为 number）
+                    selectedAccountIds.clear();
                     data.account_ids.forEach(accountId => {
-                        selectedAccountIds.add(accountId);
+                        const id = Number(accountId);
+                        if (Number.isInteger(id) && id > 0) {
+                            selectedAccountIds.add(id);
+                        }
                     });
-                    
+
                     // 更新当前页面的复选框状态
                     const checkboxes = getActiveAccountCheckboxes();
                     checkboxes.forEach(cb => {
-                        if (selectedAccountIds.has(parseInt(cb.value))) {
-                            cb.checked = true;
-                        }
+                        const id = parseInt(cb.value, 10);
+                        cb.checked = selectedAccountIds.has(id);
                     });
-                    
+
                     updateBatchActionBar();
                     updateSelectAllCheckbox();
-                    
-                    // 显示提示信息
+
                     const totalSelected = selectedAccountIds.size;
                     const message = translateAppTextLocal('已选择分组内所有 ${totalSelected} 个邮箱').replace('${totalSelected}', totalSelected);
                     showToast(message);
+                } else {
+                    showToast(translateAppTextLocal('全选失败，请重试'), 'error');
+                    updateSelectAllCheckbox();
                 }
             } catch (error) {
                 console.error('全选失败:', error);
                 showToast(translateAppTextLocal('全选失败，请重试'), 'error');
+                updateSelectAllCheckbox();
             }
         }
 
-        // 全选当前页面所有账号（保留旧功能作为备用）
-        function selectAllAccounts() {
+        // 全选当前页面所有账号
+        function selectAllAccountsOnPage() {
+            closeSelectAllMenus();
             const checkboxes = getActiveAccountCheckboxes();
+            if (checkboxes.length === 0) {
+                showToast(translateAppTextLocal('当前页暂无可选邮箱'), 'info');
+                updateSelectAllCheckbox();
+                return;
+            }
+
             checkboxes.forEach(cb => {
                 cb.checked = true;
-                selectedAccountIds.add(parseInt(cb.value));
+                selectedAccountIds.add(parseInt(cb.value, 10));
             });
             updateBatchActionBar();
             updateSelectAllCheckbox();
+
+            const pageSelected = checkboxes.length;
+            const message = translateAppTextLocal('已选择当前页 ${pageSelected} 个邮箱').replace('${pageSelected}', pageSelected);
+            showToast(message);
         }
 
-        // 取消全选当前分组
+        // 兼容旧调用名
+        function selectAllAccounts() {
+            selectAllAccountsOnPage();
+        }
+
+        // 取消全选（清空全部选中，含跨页）
         function unselectAllAccounts() {
+            selectedAccountIds.clear();
             const checkboxes = getActiveAccountCheckboxes();
             checkboxes.forEach(cb => {
                 cb.checked = false;
-                selectedAccountIds.delete(parseInt(cb.value));
             });
             updateBatchActionBar();
             updateSelectAllCheckbox();
         }
 
-        // 更新全选复选框状态（基于当前分组）
+        // 更新全选复选框状态（基于当前页可见项 + 全局选中集合）
         function updateSelectAllCheckbox() {
             const checkboxes = getActiveAccountCheckboxes();
             const checkedCount = checkboxes.filter(cb => cb.checked).length;

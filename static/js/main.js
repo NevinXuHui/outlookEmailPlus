@@ -4455,25 +4455,32 @@ ${details}
         // ── 批量拉取邮件（Issue #55: 标准模式 latest-only）──
 
         function resolveSelectedAccountsForBatchFetch() {
+            // 以 selectedAccountIds 为唯一真相源（跨页全选后缓存只有当前页）
             const result = [];
-            const idSet = selectedAccountIds;
-            if (!idSet || idSet.size === 0) return result;
+            if (!selectedAccountIds || selectedAccountIds.size === 0) return result;
 
-            const seen = new Set();
+            const metaById = new Map();
             const groupArrays = Object.values(accountsCache);
             for (const group of groupArrays) {
                 if (!Array.isArray(group)) continue;
                 for (const acc of group) {
-                    if (acc && acc.id && idSet.has(acc.id) && !seen.has(acc.id)) {
-                        seen.add(acc.id);
-                        result.push({
-                            id: acc.id,
-                            email: acc.email,
-                            account_type: acc.account_type,
-                            provider: acc.provider,
-                        });
-                    }
+                    if (!acc || acc.id === undefined || acc.id === null) continue;
+                    const id = Number(acc.id);
+                    if (!Number.isInteger(id) || id <= 0) continue;
+                    metaById.set(id, acc);
                 }
+            }
+
+            for (const rawId of selectedAccountIds) {
+                const id = Number(rawId);
+                if (!Number.isInteger(id) || id <= 0) continue;
+                const acc = metaById.get(id);
+                result.push({
+                    id,
+                    email: acc ? (acc.email || '') : '',
+                    account_type: acc ? acc.account_type : null,
+                    provider: acc ? acc.provider : null,
+                });
             }
             return result;
         }
@@ -4556,76 +4563,523 @@ ${details}
         }
 
         function showBatchFetchConfirm() {
-            if (selectedAccountIds.size === 0) {
+            const selectedCount = selectedAccountIds ? selectedAccountIds.size : 0;
+            if (selectedCount === 0) {
+                showToast(translateAppTextLocal('请选择要批量拉取邮件的账号'), 'error');
+                return;
+            }
+
+            const countEl = document.getElementById('batchFetchSelectedCount');
+            if (countEl) {
+                countEl.textContent = `${selectedCount} ${translateAppTextLocal('个账号')}`;
+            }
+
+            const senderInput = document.getElementById('batchFetchSenderInput');
+            if (senderInput && !senderInput.value) {
+                // 保留上次输入，方便连续操作
+            }
+
+            openBatchFetchModal();
+        }
+
+        const BATCH_FETCH_CONCURRENCY_KEY = 'batchFetchConcurrency';
+        const BATCH_FETCH_TOP_KEY = 'batchFetchTop';
+
+        function getBatchFetchTop() {
+            const input = document.getElementById('batchFetchTopInput');
+            let value = input ? parseInt(input.value, 10) : NaN;
+            if (!Number.isInteger(value)) {
+                try {
+                    value = parseInt(localStorage.getItem(BATCH_FETCH_TOP_KEY) || '15', 10);
+                } catch (_e) {
+                    value = 15;
+                }
+            }
+            // 仅下限保护：至少 1；不设上限
+            if (!Number.isInteger(value) || value < 1) value = 15;
+            return value;
+        }
+
+        function syncBatchFetchTopInput() {
+            const input = document.getElementById('batchFetchTopInput');
+            if (!input) return;
+            let saved = 15;
+            try {
+                saved = parseInt(localStorage.getItem(BATCH_FETCH_TOP_KEY) || '15', 10);
+            } catch (_e) {
+                saved = 15;
+            }
+            if (!Number.isInteger(saved) || saved < 1) saved = 15;
+            input.value = String(saved);
+        }
+
+        function getBatchFetchConcurrency() {
+            const input = document.getElementById('batchFetchConcurrencyInput');
+            let value = input ? parseInt(input.value, 10) : NaN;
+            if (!Number.isInteger(value)) {
+                try {
+                    value = parseInt(localStorage.getItem(BATCH_FETCH_CONCURRENCY_KEY) || '5', 10);
+                } catch (_e) {
+                    value = 5;
+                }
+            }
+            // 仅下限保护：至少 1；不设上限
+            if (!Number.isInteger(value) || value < 1) value = 5;
+            return value;
+        }
+
+        function syncBatchFetchConcurrencyInput() {
+            const input = document.getElementById('batchFetchConcurrencyInput');
+            if (!input) return;
+            let saved = 5;
+            try {
+                saved = parseInt(localStorage.getItem(BATCH_FETCH_CONCURRENCY_KEY) || '5', 10);
+            } catch (_e) {
+                saved = 5;
+            }
+            if (!Number.isInteger(saved) || saved < 1) saved = 5;
+            input.value = String(saved);
+        }
+
+        function openBatchFetchModal() {
+            const modal = document.getElementById('batchFetchModal');
+            if (!modal) {
+                // 兼容旧页面：回退到简单确认
+                const accounts = resolveSelectedAccountsForBatchFetch();
+                if (!accounts.length) {
+                    showToast(translateAppTextLocal('请选择要批量拉取邮件的账号'), 'error');
+                    return;
+                }
+                if (!confirm(`${translateAppTextLocal('批量拉取邮件')}：${translateAppTextLocal('收件箱 + 垃圾箱')} (${accounts.length} ${translateAppTextLocal('个账号')})？`)) {
+                    return;
+                }
+                batchFetchSelectedEmails(accounts);
+                return;
+            }
+            modal.classList.add('show');
+            syncBatchFetchTopInput();
+            syncBatchFetchConcurrencyInput();
+            loadGroupsForBatchFetch();
+        }
+
+        function hideBatchFetchModal() {
+            const modal = document.getElementById('batchFetchModal');
+            if (modal) {
+                modal.classList.remove('show');
+            }
+        }
+
+        function getBatchFetchGroupSelectIds() {
+            return [
+                'batchFetchMatchedGroupSelect',
+                'batchFetchUnmatchedGroupSelect',
+                'batchFetchFailedGroupSelect',
+                'batchFetchTargetGroupSelect'
+            ];
+        }
+
+        async function loadGroupsForBatchFetch() {
+            const selects = getBatchFetchGroupSelectIds()
+                .map(id => document.getElementById(id))
+                .filter(Boolean);
+            if (!selects.length) return;
+
+            const previousById = {};
+            selects.forEach(select => {
+                previousById[select.id] = select.value || '';
+                select.innerHTML = `<option value="">${translateAppTextLocal('不移动')}</option>`;
+            });
+
+            try {
+                const response = await fetch('/api/groups');
+                const data = await response.json();
+                if (data.success && Array.isArray(data.groups)) {
+                    const groups = data.groups.filter(g => !g.is_system);
+                    selects.forEach(select => {
+                        groups.forEach(group => {
+                            const option = document.createElement('option');
+                            option.value = String(group.id);
+                            option.textContent = group.name;
+                            select.appendChild(option);
+                        });
+                        const prev = previousById[select.id];
+                        if (prev) select.value = prev;
+                    });
+                }
+            } catch (error) {
+                // 保留“不移动”
+            }
+        }
+
+        function readBatchFetchGroupChoice(selectId) {
+            const select = document.getElementById(selectId);
+            if (!select) return { id: null, name: '' };
+            const raw = String(select.value || '').trim();
+            const id = raw ? parseInt(raw, 10) : null;
+            const name = select.selectedIndex >= 0 ? (select.options[select.selectedIndex].textContent || '') : '';
+            if (!Number.isInteger(id) || id <= 0) return { id: null, name: '' };
+            return { id, name };
+        }
+
+        function parseSenderMatchers(raw) {
+            return String(raw || '')
+                .split(/[\s,;，；|]+/)
+                .map(part => part.trim().toLowerCase())
+                .filter(Boolean);
+        }
+
+        function extractEmailFromField(fromValue) {
+            if (fromValue == null) return '';
+            if (typeof fromValue === 'object') {
+                const nested = fromValue.emailAddress || fromValue;
+                const addr = nested.address || nested.email || nested.name || '';
+                return String(addr || '').trim();
+            }
+            return String(fromValue || '').trim();
+        }
+
+        function accountHasMatchingSender(result, matchers) {
+            if (!matchers || matchers.length === 0) return false;
+            const folders = result && result.folders ? result.folders : {};
+            for (const folderData of Object.values(folders)) {
+                if (!folderData || !folderData.success || !Array.isArray(folderData.emails)) continue;
+                for (const email of folderData.emails) {
+                    const fromText = extractEmailFromField(email && email.from).toLowerCase();
+                    if (!fromText) continue;
+                    if (matchers.some(m => fromText.includes(m))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        async function confirmBatchFetchWithFilter() {
+            const selectedCount = selectedAccountIds ? selectedAccountIds.size : 0;
+            if (selectedCount === 0) {
                 showToast(translateAppTextLocal('请选择要批量拉取邮件的账号'), 'error');
                 return;
             }
 
             const accounts = resolveSelectedAccountsForBatchFetch();
-            if (accounts.length === 0) {
+            if (!accounts.length) {
                 showToast(translateAppTextLocal('请选择要批量拉取邮件的账号'), 'error');
                 return;
             }
 
-            if (!confirm(`${translateAppTextLocal('批量拉取邮件')}：${translateAppTextLocal('收件箱 + 垃圾箱')} (${accounts.length} ${translateAppTextLocal('个账号')})？`)) {
+            const senderRaw = (document.getElementById('batchFetchSenderInput') || {}).value || '';
+            const matchers = parseSenderMatchers(senderRaw);
+            let matchedGroup = readBatchFetchGroupChoice('batchFetchMatchedGroupSelect');
+            let unmatchedGroup = readBatchFetchGroupChoice('batchFetchUnmatchedGroupSelect');
+            const failedGroup = readBatchFetchGroupChoice('batchFetchFailedGroupSelect');
+            const legacyUnmatched = readBatchFetchGroupChoice('batchFetchTargetGroupSelect');
+            if (!unmatchedGroup.id && legacyUnmatched.id) {
+                unmatchedGroup = legacyUnmatched;
+            }
+
+            if ((matchedGroup.id || unmatchedGroup.id) && matchers.length === 0) {
+                showToast(translateAppTextLocal('命中/无匹配分流需要填写特定发件人'), 'error');
                 return;
             }
 
-            batchFetchSelectedEmails(accounts);
+            const count = Math.max(accounts.length, selectedCount);
+            if (count > 200) {
+                const ok = confirm(`${translateAppTextLocal('选中数量较大，拉取可能耗时较长，确认继续？')}\n(${count} ${translateAppTextLocal('个账号')})`);
+                if (!ok) return;
+            }
+
+            const concurrency = getBatchFetchConcurrency();
+            const top = getBatchFetchTop();
+            try {
+                localStorage.setItem(BATCH_FETCH_CONCURRENCY_KEY, String(concurrency));
+                localStorage.setItem(BATCH_FETCH_TOP_KEY, String(top));
+            } catch (_e) {}
+            const concurrencyInput = document.getElementById('batchFetchConcurrencyInput');
+            if (concurrencyInput) concurrencyInput.value = String(concurrency);
+            const topInput = document.getElementById('batchFetchTopInput');
+            if (topInput) topInput.value = String(top);
+
+            hideBatchFetchModal();
+            await batchFetchSelectedEmails(accounts, {
+                senderMatchers: matchers,
+                moveMatchedToGroupId: matchedGroup.id,
+                moveMatchedToGroupName: matchedGroup.name || '',
+                moveUnmatchedToGroupId: unmatchedGroup.id,
+                moveUnmatchedToGroupName: unmatchedGroup.name || '',
+                moveFailedToGroupId: failedGroup.id,
+                moveFailedToGroupName: failedGroup.name || '',
+                concurrency,
+                top
+            });
         }
 
-        async function batchFetchSelectedEmails(accounts) {
+        async function batchFetchSelectedEmails(accounts, options = {}) {
             const toastId = 'batch-fetch-toast-' + Date.now();
-            showPersistentToast(toastId, `${translateAppTextLocal('正在批量拉取邮件')}...`);
+            const total = Array.isArray(accounts) ? accounts.length : 0;
+            let concurrency = parseInt(options.concurrency, 10);
+            if (!Number.isInteger(concurrency) || concurrency < 1) concurrency = getBatchFetchConcurrency() || 5;
+            if (!Number.isInteger(concurrency) || concurrency < 1) concurrency = 5;
+            let top = parseInt(options.top, 10);
+            if (!Number.isInteger(top) || top < 1) top = getBatchFetchTop() || 15;
+            if (!Number.isInteger(top) || top < 1) top = 15;
 
-            const ids = accounts.map(a => a.id);
+            const senderMatchers = Array.isArray(options.senderMatchers) ? options.senderMatchers : [];
+            const matchedGroupId = Number.isInteger(options.moveMatchedToGroupId) ? options.moveMatchedToGroupId : null;
+            const matchedGroupName = options.moveMatchedToGroupName || '';
+            const unmatchedGroupId = Number.isInteger(options.moveUnmatchedToGroupId) ? options.moveUnmatchedToGroupId : null;
+            const unmatchedGroupName = options.moveUnmatchedToGroupName || '';
+            const failedGroupId = Number.isInteger(options.moveFailedToGroupId) ? options.moveFailedToGroupId : null;
+            const failedGroupName = options.moveFailedToGroupName || '';
+            const enableSenderRoute = senderMatchers.length > 0 && (matchedGroupId || unmatchedGroupId);
+            const enableFailedRoute = Number.isInteger(failedGroupId) && failedGroupId > 0;
+            const enableAnyRoute = enableSenderRoute || enableFailedRoute;
 
-            try {
-                const response = await fetch('/api/emails/batch', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ account_ids: ids, folders: ['inbox', 'junkemail'], skip: 0, top: 10 })
-                });
-                const data = await response.json();
+            if (!total) {
+                showToast(translateAppTextLocal('请选择要批量拉取邮件的账号'), 'error');
+                return;
+            }
 
-                dismissPersistentToast(toastId);
+            let doneCount = 0;
+            let successAccounts = 0;
+            let failCount = 0;
+            let matchedCount = 0;
+            let unmatchedCount = 0;
+            let movedMatched = 0;
+            let movedUnmatched = 0;
+            let movedFailed = 0;
+            let moveFailCount = 0;
+            const failedAccounts = [];
+            const startedAt = Date.now();
+            let listNeedsRefresh = false;
+            const chunkSize = Math.max(1, Math.min(concurrency, total));
 
-                if (!data.success) {
-                    handleApiError(data, translateAppTextLocal('批量拉取失败'));
-                    return;
+            function formatProgressMessage() {
+                const pct = total > 0 ? Math.floor((doneCount / total) * 100) : 0;
+                const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+                const rate = doneCount > 0 ? (doneCount / elapsedSec) : 0;
+                const remain = total - doneCount;
+                const etaSec = rate > 0 ? Math.ceil(remain / rate) : 0;
+                let msg = `${translateAppTextLocal('正在批量拉取邮件')}... ${doneCount}/${total} (${pct}%)`;
+                msg += ` · ${translateAppTextLocal('成功')} ${successAccounts}`;
+                msg += ` · ${translateAppTextLocal('失败')} ${failCount}`;
+                msg += ` · ${translateAppTextLocal('服务端并发')} ${chunkSize}`;
+                msg += ` · ${translateAppTextLocal('每邮箱')} ${top}`;
+                if (senderMatchers.length > 0) {
+                    msg += ` · ${translateAppTextLocal('命中发件人')} ${matchedCount}`;
+                    msg += ` · ${translateAppTextLocal('无匹配')} ${unmatchedCount}`;
+                }
+                if (enableAnyRoute) {
+                    const movedTotal = movedMatched + movedUnmatched + movedFailed;
+                    msg += ` · ${translateAppTextLocal('已移动')} ${movedTotal}`;
+                    if (movedMatched || movedUnmatched || movedFailed) {
+                        msg += `(${translateAppTextLocal('命中')}${movedMatched}/${translateAppTextLocal('无匹配')}${movedUnmatched}/${translateAppTextLocal('失败')}${movedFailed})`;
+                    }
+                    if (moveFailCount > 0) msg += ` · ${translateAppTextLocal('移动失败')} ${moveFailCount}`;
+                }
+                if (doneCount > 0 && remain > 0 && etaSec > 0) msg += ` · ETA ${etaSec}s`;
+                return msg;
+            }
+
+            function renderBatchProgress() {
+                updatePersistentToast(toastId, formatProgressMessage());
+            }
+
+            async function moveAccountsToGroup(accountIds, groupId, onMoved) {
+                const ids = (accountIds || []).filter(id => Number.isInteger(Number(id)) && Number(id) > 0).map(Number);
+                if (!groupId || !ids.length) return;
+                const moveChunkSize = 100;
+                for (let i = 0; i < ids.length; i += moveChunkSize) {
+                    const chunk = ids.slice(i, i + moveChunkSize);
+                    try {
+                        const moveResp = await fetch('/api/accounts/batch-update-group', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ account_ids: chunk, group_id: groupId })
+                        });
+                        const moveData = await moveResp.json();
+                        if (moveData.success) {
+                            if (typeof onMoved === 'function') onMoved(chunk.length);
+                            chunk.forEach(id => selectedAccountIds.delete(id));
+                            listNeedsRefresh = true;
+                        } else {
+                            moveFailCount += chunk.length;
+                        }
+                    } catch (_e) {
+                        moveFailCount += chunk.length;
+                    }
+                    renderBatchProgress();
+                }
+            }
+
+            function classifyResult(result) {
+                const out = { matchedId: null, unmatchedId: null, failedId: null };
+                if (!result) {
+                    failCount++;
+                    return out;
+                }
+                const aid = Number(result.account_id);
+                const validId = (Number.isInteger(aid) && aid > 0) ? aid : null;
+
+                if (!result.success) {
+                    failCount++;
+                    failedAccounts.push(result.email || result.account_id);
+                    if (enableFailedRoute && validId) out.failedId = validId;
+                    return out;
                 }
 
-                // 回写缓存 + 刷新当前邮箱
-                let successAccounts = 0;
-                const failedAccounts = [];
-
-                for (const result of (data.results || [])) {
-                    if (result.success) {
-                        successAccounts++;
-                        const emailAddr = result.email || '';
-                        const folders = result.folders || {};
-                        for (const [folder, folderData] of Object.entries(folders)) {
-                            if (folderData && folderData.success) {
-                                if (folderData.account_summary && typeof syncAccountSummaryToAccountCache === 'function') {
-                                    syncAccountSummaryToAccountCache(emailAddr, folderData.account_summary);
-                                }
-                                cacheBatchFetchedFolder(emailAddr, folder, folderData);
-                                refreshCurrentMailboxIfNeeded(emailAddr, folder, folderData);
-                            }
+                successAccounts++;
+                const emailAddr = result.email || '';
+                const folders = result.folders || {};
+                for (const [folder, folderData] of Object.entries(folders)) {
+                    if (folderData && folderData.success) {
+                        if (folderData.account_summary && typeof syncAccountSummaryToAccountCache === 'function') {
+                            syncAccountSummaryToAccountCache(emailAddr, folderData.account_summary);
                         }
-                    } else {
-                        failedAccounts.push(result.email || result.account_id);
+                        cacheBatchFetchedFolder(emailAddr, folder, folderData);
+                        refreshCurrentMailboxIfNeeded(emailAddr, folder, folderData);
                     }
                 }
 
-                const failCount = failedAccounts.length;
-                let msg = `${translateAppTextLocal('批量拉取完成')}：${translateAppTextLocal('成功')} ${successAccounts}，${translateAppTextLocal('失败')} ${failCount}`;
-                if (failCount > 0) {
-                    msg += `（${failedAccounts.join(', ')}）`;
+                if (senderMatchers.length > 0) {
+                    if (accountHasMatchingSender(result, senderMatchers)) {
+                        matchedCount++;
+                        if (matchedGroupId && validId) out.matchedId = validId;
+                    } else {
+                        unmatchedCount++;
+                        if (unmatchedGroupId && validId) out.unmatchedId = validId;
+                    }
                 }
-                showToast(msg, failCount > 0 ? 'warning' : 'success');
+                return out;
+            }
+
+            async function fetchAccountChunk(accountChunk) {
+                const ids = accountChunk.map(a => a.id).filter(id => id !== undefined && id !== null);
+                if (!ids.length) return [];
+                try {
+                    const response = await fetch('/api/emails/batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            account_ids: ids,
+                            folders: ['inbox', 'junkemail'],
+                            skip: 0,
+                            top,
+                            concurrency: ids.length
+                        })
+                    });
+                    const data = await response.json();
+                    if (!data.success) {
+                        return ids.map(accountId => {
+                            const acc = accountChunk.find(a => Number(a.id) === Number(accountId));
+                            return {
+                                account_id: accountId,
+                                email: (acc && acc.email) || '',
+                                success: false,
+                                error: (data.error && data.error.code) || 'BATCH_EMAIL_FETCH_FAILED'
+                            };
+                        });
+                    }
+                    const results = Array.isArray(data.results) ? data.results : [];
+                    const seen = new Set(results.map(r => Number(r && r.account_id)));
+                    for (const accountId of ids) {
+                        if (!seen.has(Number(accountId))) {
+                            const acc = accountChunk.find(a => Number(a.id) === Number(accountId));
+                            results.push({
+                                account_id: accountId,
+                                email: (acc && acc.email) || '',
+                                success: false,
+                                error: 'EMPTY_RESULT'
+                            });
+                        }
+                    }
+                    return results;
+                } catch (error) {
+                    return ids.map(accountId => {
+                        const acc = accountChunk.find(a => Number(a.id) === Number(accountId));
+                        return {
+                            account_id: accountId,
+                            email: (acc && acc.email) || '',
+                            success: false,
+                            error: 'NETWORK_ERROR',
+                            details: String(error && error.message || error || '')
+                        };
+                    });
+                }
+            }
+
+            showPersistentToast(toastId, formatProgressMessage());
+
+            try {
+                for (let offset = 0; offset < total; offset += chunkSize) {
+                    const accountChunk = accounts.slice(offset, offset + chunkSize);
+                    updatePersistentToast(
+                        toastId,
+                        `${formatProgressMessage()} · ${translateAppTextLocal('本波')} ${accountChunk.length}`
+                    );
+
+                    const results = await fetchAccountChunk(accountChunk);
+                    const matchedIds = [];
+                    const unmatchedIds = [];
+                    const failedIds = [];
+                    for (const result of results) {
+                        const c = classifyResult(result);
+                        if (c.matchedId) matchedIds.push(c.matchedId);
+                        if (c.unmatchedId) unmatchedIds.push(c.unmatchedId);
+                        if (c.failedId) failedIds.push(c.failedId);
+                        doneCount += 1;
+                    }
+                    renderBatchProgress();
+
+                    if (matchedIds.length && matchedGroupId) {
+                        await moveAccountsToGroup(matchedIds, matchedGroupId, n => { movedMatched += n; });
+                    }
+                    if (unmatchedIds.length && unmatchedGroupId) {
+                        await moveAccountsToGroup(unmatchedIds, unmatchedGroupId, n => { movedUnmatched += n; });
+                    }
+                    if (failedIds.length && failedGroupId) {
+                        await moveAccountsToGroup(failedIds, failedGroupId, n => { movedFailed += n; });
+                    }
+                }
+
+                if (listNeedsRefresh) {
+                    if (typeof loadGroups === 'function') loadGroups();
+                    if (currentGroupId) {
+                        delete accountsCache[currentGroupId];
+                        if (typeof loadAccountsByGroup === 'function') {
+                            await loadAccountsByGroup(currentGroupId, true);
+                        }
+                    }
+                    updateBatchActionBar();
+                }
+
+                dismissPersistentToast(toastId);
+
+                const moveFailed = moveFailCount > 0;
+                const movedTotal = movedMatched + movedUnmatched + movedFailed;
+                let msg = `${translateAppTextLocal('批量拉取完成')}：${doneCount}/${total}，${translateAppTextLocal('成功')} ${successAccounts}，${translateAppTextLocal('失败')} ${failCount}`;
+                if (senderMatchers.length > 0) {
+                    msg += `；${translateAppTextLocal('命中发件人')} ${matchedCount}，${translateAppTextLocal('无匹配')} ${unmatchedCount}`;
+                }
+                if (enableAnyRoute) {
+                    msg += `；${translateAppTextLocal('已移动')} ${movedTotal}`;
+                    const parts = [];
+                    if (movedMatched) parts.push(`${translateAppTextLocal('命中')} ${movedMatched}${matchedGroupName ? '→' + matchedGroupName : ''}`);
+                    if (movedUnmatched) parts.push(`${translateAppTextLocal('无匹配')} ${movedUnmatched}${unmatchedGroupName ? '→' + unmatchedGroupName : ''}`);
+                    if (movedFailed) parts.push(`${translateAppTextLocal('失败')} ${movedFailed}${failedGroupName ? '→' + failedGroupName : ''}`);
+                    if (parts.length) msg += `（${parts.join('，')}）`;
+                    if (moveFailed) msg += `（${translateAppTextLocal('移动失败')} ${moveFailCount}）`;
+                }
+                if (failCount > 0) {
+                    msg += `（${failedAccounts.slice(0, 5).join(', ')}${failCount > 5 ? '...' : ''}）`;
+                }
+                showToast(msg, (failCount > 0 || moveFailed) ? 'warning' : 'success');
+
+                if (mailboxViewMode === 'compact' && typeof renderCompactAccountList === 'function' && currentGroupId && Array.isArray(accountsCache[currentGroupId])) {
+                    renderCompactAccountList(accountsCache[currentGroupId]);
+                }
             } catch (error) {
                 dismissPersistentToast(toastId);
+                console.error('batch fetch failed', error);
                 showToast(translateAppTextLocal('操作失败'), 'error');
             }
         }
@@ -4635,7 +5089,7 @@ ${details}
             let accountSuccess = false;
             for (const folder of folders) {
                 try {
-                    const url = `/api/emails/${encodeURIComponent(acc.email)}?folder=${folder}&skip=0&top=10`;
+                    const url = `/api/emails/${encodeURIComponent(acc.email)}?folder=${folder}&skip=0&top=15`;
                     const response = await fetch(url);
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     const data = await response.json();

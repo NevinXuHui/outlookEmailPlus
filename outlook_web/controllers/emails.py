@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from flask import current_app, jsonify, request
@@ -95,6 +96,203 @@ def _update_account_summary_from_verification(account: Dict[str, Any], data: Dic
 
 
 # ==================== 邮件 API ====================
+
+
+def _normalize_batch_concurrency(raw: Any, *, default: int = 5, minimum: int = 1) -> int:
+    """批量拉取并发度：默认 5，仅保证 >= 1，不设上限。"""
+    try:
+        value = int(raw if raw is not None else default)
+    except (TypeError, ValueError):
+        value = default
+    if value < minimum:
+        return minimum
+    return value
+
+
+def _fetch_one_account_for_batch(
+    aid: int,
+    *,
+    normalized_folders: List[str],
+    skip: int,
+    top: int,
+) -> Dict[str, Any]:
+    """拉取单个账号的多文件夹邮件，返回单条 batch result。"""
+    account = None
+    try:
+        account = accounts_repo.get_account_by_id(int(aid))
+    except Exception:
+        account = None
+
+    if not account:
+        return {"account_id": int(aid), "success": False, "error": "ACCOUNT_NOT_FOUND"}
+
+    email_addr = str(account.get("email") or "")
+    account_type = (account.get("account_type") or "outlook").strip().lower()
+
+    # outlook 类型需要先检查凭据解密错误（保持与单账号接口一致的安全行为）
+    if account_type != "imap":
+        decrypt_error_response = _build_account_credential_decrypt_failed_response(account)
+        if decrypt_error_response:
+            return {
+                "account_id": int(aid),
+                "email": email_addr,
+                "success": False,
+                "error": "ACCOUNT_CREDENTIAL_DECRYPT_FAILED",
+            }
+
+    proxy_url = ""
+    try:
+        if account.get("group_id"):
+            group = groups_repo.get_group_by_id(account["group_id"])
+            if group:
+                proxy_url = group.get("proxy_url", "") or ""
+    except Exception:
+        proxy_url = ""
+
+    per_folder_results: Dict[str, Any] = {}
+    any_folder_success = False
+
+    for folder in normalized_folders:
+        try:
+            if account_type == "imap":
+                result = get_emails_imap_generic(
+                    email_addr=email_addr,
+                    imap_password=account.get("imap_password", "") or "",
+                    imap_host=account.get("imap_host", "") or "",
+                    imap_port=account.get("imap_port", 993) or 993,
+                    folder=folder,
+                    provider=account.get("provider", "_default") or "_default",
+                    skip=skip,
+                    top=top,
+                )
+                if result.get("success"):
+                    result["account_summary"] = compact_summary_service.update_summary_from_message_list(
+                        int(account["id"]),
+                        result.get("emails") or [],
+                        folder=folder,
+                    )
+                per_folder_results[folder] = result
+                any_folder_success = any_folder_success or bool(result.get("success"))
+                continue
+
+            graph_result = graph_service.get_emails_graph(
+                account.get("client_id") or "",
+                account.get("refresh_token") or "",
+                folder,
+                skip,
+                top,
+                proxy_url,
+            )
+            if graph_result.get("success"):
+                emails = graph_result.get("emails", [])
+                account_summary = compact_summary_service.update_summary_from_message_list(
+                    int(account["id"]),
+                    emails,
+                    folder=folder,
+                )
+                # Token Rotation + 刷新时间
+                new_rt = graph_result.get("new_refresh_token")
+                if new_rt:
+                    _persist_refresh_token(account, str(new_rt or ""))
+                accounts_repo.touch_last_refresh_at(int(account["id"]))
+
+                formatted = []
+                for e in emails:
+                    formatted.append(
+                        {
+                            "id": e.get("id"),
+                            "subject": e.get("subject", "无主题"),
+                            "from": e.get("from", {}).get("emailAddress", {}).get("address", "未知"),
+                            "date": e.get("receivedDateTime", ""),
+                            "is_read": e.get("isRead", False),
+                            "has_attachments": e.get("hasAttachments", False),
+                            "body_preview": e.get("bodyPreview", ""),
+                        }
+                    )
+
+                per_folder_results[folder] = {
+                    "success": True,
+                    "emails": formatted,
+                    "method": "Graph API",
+                    "has_more": len(formatted) >= top,
+                    "account_summary": account_summary,
+                }
+                any_folder_success = True
+                continue
+
+            imap_new_result = imap_service.get_emails_imap_with_server(
+                email_addr,
+                account.get("client_id") or "",
+                account.get("refresh_token") or "",
+                folder,
+                skip,
+                top,
+                IMAP_SERVER_NEW,
+            )
+            if imap_new_result.get("success"):
+                account_summary = compact_summary_service.update_summary_from_message_list(
+                    int(account["id"]),
+                    imap_new_result.get("emails", []) or [],
+                    folder=folder,
+                )
+                per_folder_results[folder] = {
+                    "success": True,
+                    "emails": imap_new_result.get("emails", []),
+                    "method": "IMAP (New)",
+                    "has_more": False,
+                    "account_summary": account_summary,
+                }
+                any_folder_success = True
+                continue
+
+            imap_old_result = imap_service.get_emails_imap_with_server(
+                email_addr,
+                account.get("client_id") or "",
+                account.get("refresh_token") or "",
+                folder,
+                skip,
+                top,
+                IMAP_SERVER_OLD,
+            )
+            if imap_old_result.get("success"):
+                account_summary = compact_summary_service.update_summary_from_message_list(
+                    int(account["id"]),
+                    imap_old_result.get("emails", []) or [],
+                    folder=folder,
+                )
+                per_folder_results[folder] = {
+                    "success": True,
+                    "emails": imap_old_result.get("emails", []),
+                    "method": "IMAP (Old)",
+                    "has_more": False,
+                    "account_summary": account_summary,
+                }
+                any_folder_success = True
+                continue
+
+            # 全部方法失败：保留错误结构（不抛整批）
+            per_folder_results[folder] = {
+                "success": False,
+                "error": graph_result.get("error") or {"code": "EMAIL_FETCH_FAILED"},
+            }
+        except Exception as e:
+            per_folder_results[folder] = {
+                "success": False,
+                "error": {
+                    "code": "EMAIL_BATCH_FETCH_FAILED",
+                    "message": "批量拉取失败",
+                    "message_en": "Batch fetch failed",
+                    "details": str(e),
+                },
+            }
+
+    return {
+        "account_id": int(aid),
+        "email": email_addr,
+        "success": any_folder_success,
+        "folders": per_folder_results,
+    }
+
 
 
 @login_required
@@ -218,7 +416,7 @@ def api_batch_get_emails() -> Any:
 
     try:
         skip = int(data.get("skip", 0) or 0)
-        top = int(data.get("top", 10) or 10)
+        top = int(data.get("top", 15) or 15)
     except Exception:
         return build_error_response(
             "INVALID_PARAM",
@@ -227,210 +425,66 @@ def api_batch_get_emails() -> Any:
             status=400,
         )
 
-    results: List[Dict[str, Any]] = []
-    success_accounts = 0
-    failed_accounts = 0
+    concurrency = _normalize_batch_concurrency(data.get("concurrency", 5))
 
-    for aid in deduped_ids:
-        account = None
-        try:
-            account = accounts_repo.get_account_by_id(int(aid))
-        except Exception:
-            account = None
+    app = current_app._get_current_object()
 
-        if not account:
-            results.append({"account_id": int(aid), "success": False, "error": "ACCOUNT_NOT_FOUND"})
-            failed_accounts += 1
-            continue
-
-        email_addr = str(account.get("email") or "")
-        account_type = (account.get("account_type") or "outlook").strip().lower()
-
-        # outlook 类型需要先检查凭据解密错误（保持与单账号接口一致的安全行为）
-        if account_type != "imap":
-            decrypt_error_response = _build_account_credential_decrypt_failed_response(account)
-            if decrypt_error_response:
-                results.append(
-                    {
-                        "account_id": int(aid),
-                        "email": email_addr,
-                        "success": False,
-                        "error": "ACCOUNT_CREDENTIAL_DECRYPT_FAILED",
-                    }
-                )
-                failed_accounts += 1
-                continue
-
-        proxy_url = ""
-        try:
-            if account.get("group_id"):
-                group = groups_repo.get_group_by_id(account["group_id"])
-                if group:
-                    proxy_url = group.get("proxy_url", "") or ""
-        except Exception:
-            proxy_url = ""
-
-        per_folder_results: Dict[str, Any] = {}
-        any_folder_success = False
-
-        for folder in normalized_folders:
+    def _worker(aid: int) -> Dict[str, Any]:
+        # 每个 worker 独立 app_context，保证 get_db() 线程隔离
+        with app.app_context():
             try:
-                if account_type == "imap":
-                    result = get_emails_imap_generic(
-                        email_addr=email_addr,
-                        imap_password=account.get("imap_password", "") or "",
-                        imap_host=account.get("imap_host", "") or "",
-                        imap_port=account.get("imap_port", 993) or 993,
-                        folder=folder,
-                        provider=account.get("provider", "_default") or "_default",
-                        skip=skip,
-                        top=top,
-                    )
-                    if result.get("success"):
-                        result["account_summary"] = compact_summary_service.update_summary_from_message_list(
-                            int(account["id"]),
-                            result.get("emails") or [],
-                            folder=folder,
-                        )
-                    per_folder_results[folder] = result
-                    any_folder_success = any_folder_success or bool(result.get("success"))
-                    continue
-
-                graph_result = graph_service.get_emails_graph(
-                    account.get("client_id") or "",
-                    account.get("refresh_token") or "",
-                    folder,
-                    skip,
-                    top,
-                    proxy_url,
+                return _fetch_one_account_for_batch(
+                    int(aid),
+                    normalized_folders=normalized_folders,
+                    skip=skip,
+                    top=top,
                 )
-                if graph_result.get("success"):
-                    emails = graph_result.get("emails", [])
-                    account_summary = compact_summary_service.update_summary_from_message_list(
-                        int(account["id"]),
-                        emails,
-                        folder=folder,
-                    )
-                    # Token Rotation + 刷新时间
-                    new_rt = graph_result.get("new_refresh_token")
-                    if new_rt:
-                        _persist_refresh_token(account, str(new_rt or ""))
-                    accounts_repo.touch_last_refresh_at(int(account["id"]))
-
-                    formatted = []
-                    for e in emails:
-                        formatted.append(
-                            {
-                                "id": e.get("id"),
-                                "subject": e.get("subject", "无主题"),
-                                "from": e.get("from", {}).get("emailAddress", {}).get("address", "未知"),
-                                "date": e.get("receivedDateTime", ""),
-                                "is_read": e.get("isRead", False),
-                                "has_attachments": e.get("hasAttachments", False),
-                                "body_preview": e.get("bodyPreview", ""),
-                            }
-                        )
-
-                    per_folder_results[folder] = {
-                        "success": True,
-                        "emails": formatted,
-                        "method": "Graph API",
-                        "has_more": len(formatted) >= top,
-                        "account_summary": account_summary,
-                    }
-                    any_folder_success = True
-                    continue
-
-                imap_new_result = imap_service.get_emails_imap_with_server(
-                    email_addr,
-                    account.get("client_id") or "",
-                    account.get("refresh_token") or "",
-                    folder,
-                    skip,
-                    top,
-                    IMAP_SERVER_NEW,
-                )
-                if imap_new_result.get("success"):
-                    account_summary = compact_summary_service.update_summary_from_message_list(
-                        int(account["id"]),
-                        imap_new_result.get("emails", []) or [],
-                        folder=folder,
-                    )
-                    per_folder_results[folder] = {
-                        "success": True,
-                        "emails": imap_new_result.get("emails", []),
-                        "method": "IMAP (New)",
-                        "has_more": False,
-                        "account_summary": account_summary,
-                    }
-                    any_folder_success = True
-                    continue
-
-                imap_old_result = imap_service.get_emails_imap_with_server(
-                    email_addr,
-                    account.get("client_id") or "",
-                    account.get("refresh_token") or "",
-                    folder,
-                    skip,
-                    top,
-                    IMAP_SERVER_OLD,
-                )
-                if imap_old_result.get("success"):
-                    account_summary = compact_summary_service.update_summary_from_message_list(
-                        int(account["id"]),
-                        imap_old_result.get("emails", []) or [],
-                        folder=folder,
-                    )
-                    per_folder_results[folder] = {
-                        "success": True,
-                        "emails": imap_old_result.get("emails", []),
-                        "method": "IMAP (Old)",
-                        "has_more": False,
-                        "account_summary": account_summary,
-                    }
-                    any_folder_success = True
-                    continue
-
-                # 全部方法失败：保留错误结构（不抛整批）
-                per_folder_results[folder] = {
-                    "success": False,
-                    "error": graph_result.get("error") or {"code": "EMAIL_FETCH_FAILED"},
-                }
             except Exception as e:
-                per_folder_results[folder] = {
+                _LOGGER.exception("batch_get_emails worker failed for account_id=%s", aid)
+                return {
+                    "account_id": int(aid),
                     "success": False,
-                    "error": {
-                        "code": "EMAIL_BATCH_FETCH_FAILED",
-                        "message": "批量拉取失败",
-                        "message_en": "Batch fetch failed",
-                        "details": str(e),
-                    },
+                    "error": "BATCH_EMAIL_FETCH_FAILED",
+                    "details": str(e),
                 }
 
-        results.append(
-            {
-                "account_id": int(aid),
-                "email": email_addr,
-                "success": any_folder_success,
-                "folders": per_folder_results,
-            }
-        )
-        if any_folder_success:
-            success_accounts += 1
-        else:
-            failed_accounts += 1
+    results: List[Dict[str, Any]] = []
+    if concurrency <= 1 or len(deduped_ids) <= 1:
+        results = [_worker(aid) for aid in deduped_ids]
+    else:
+        ordered: List[Optional[Dict[str, Any]]] = [None] * len(deduped_ids)
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(deduped_ids))) as executor:
+            future_map = {executor.submit(_worker, aid): idx for idx, aid in enumerate(deduped_ids)}
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                try:
+                    ordered[idx] = future.result()
+                except Exception as e:
+                    aid = deduped_ids[idx]
+                    ordered[idx] = {
+                        "account_id": int(aid),
+                        "success": False,
+                        "error": "BATCH_EMAIL_FETCH_FAILED",
+                        "details": str(e),
+                    }
+        results = [item if item is not None else {"account_id": int(deduped_ids[i]), "success": False, "error": "BATCH_EMAIL_FETCH_FAILED"} for i, item in enumerate(ordered)]
+
+    success_accounts = sum(1 for item in results if item.get("success"))
+    failed_accounts = len(results) - success_accounts
 
     summary = {
         "total_accounts": len(deduped_ids),
         "success_accounts": success_accounts,
         "failed_accounts": failed_accounts,
+        "concurrency": concurrency,
+        "top": top,
     }
 
     log_audit(
         "batch_fetch_emails",
         "email",
         None,
-        f"批量获取邮件：total={summary['total_accounts']} success={success_accounts} failed={failed_accounts}",
+        f"批量获取邮件：total={summary['total_accounts']} success={success_accounts} failed={failed_accounts} concurrency={concurrency}",
     )
 
     return jsonify(

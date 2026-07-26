@@ -221,9 +221,15 @@
                             <label style="color:var(--text-muted);font-weight:500;">排序：</label>
                             <button class="btn btn-sm sort-btn active" data-sort="refresh_time" onclick="sortAccounts('refresh_time')">🕐 刷新时间</button>
                             <button class="btn btn-sm sort-btn" data-sort="email" onclick="sortAccounts('email')">📧 邮箱名</button>
-                            <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
-                                <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" style="cursor:pointer;" title="全选当前分组的所有邮箱（跨页）">
-                                <label for="selectAllCheckbox" style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;" title="全选当前分组的所有邮箱（跨页）">全选</label>
+                            <div class="select-all-control" style="margin-left:auto;">
+                                <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll(event)" style="cursor:pointer;" title="选择范围：当前页或全部">
+                                <details class="action-menu select-all-menu" id="selectAllMenu">
+                                    <summary class="select-all-label" title="选择范围：当前页或全部">全选</summary>
+                                    <div class="menu-panel select-all-menu-panel">
+                                        <button type="button" class="menu-item" onclick="event.preventDefault(); event.stopPropagation(); selectAllAccountsOnPage();">当前页</button>
+                                        <button type="button" class="menu-item" onclick="event.preventDefault(); event.stopPropagation(); selectAllAccountsInGroup();">全部</button>
+                                    </div>
+                                </details>
                             </div>
                         </div>
                         <div id="tagFilterContainer" style="padding:6px 12px;border-bottom:1px solid var(--border-light);display:none;flex-wrap:wrap;gap:6px;"></div>
@@ -329,7 +335,16 @@
                         <div class="mail-list-wrap">
                             <div class="mail-head">
                                 <div class="compact-header-cell compact-header-cell-selection">
-                                    <input type="checkbox" id="compactSelectAllCheckbox" onclick="toggleSelectAll()" title="全选当前分组的所有邮箱（跨页）">
+                                    <div class="select-all-control select-all-control-compact">
+                                        <input type="checkbox" id="compactSelectAllCheckbox" onclick="toggleSelectAll(event)" title="选择范围：当前页或全部">
+                                        <details class="action-menu select-all-menu" id="compactSelectAllMenu">
+                                            <summary class="select-all-label select-all-label-compact" title="选择范围：当前页或全部">全选</summary>
+                                            <div class="menu-panel select-all-menu-panel">
+                                                <button type="button" class="menu-item" onclick="event.preventDefault(); event.stopPropagation(); selectAllAccountsOnPage();">当前页</button>
+                                                <button type="button" class="menu-item" onclick="event.preventDefault(); event.stopPropagation(); selectAllAccountsInGroup();">全部</button>
+                                            </div>
+                                        </details>
+                                    </div>
                                 </div>
                                 <div class="compact-header-cell">邮箱</div>
                                 <div class="compact-header-cell">验证码</div>
@@ -346,6 +361,7 @@
                                 <button class="btn-inline ghost" onclick="showBatchTagModal('add')">打标签</button>
                                 <button class="btn-inline ghost" onclick="showBatchTagModal('remove')">去标签</button>
                                 <button class="btn-inline" onclick="showBatchMoveGroupModal()">移动分组</button>
+                                <button class="btn-inline ghost" onclick="showBatchFetchConfirm()">获取邮件</button>
                                 <button class="btn-inline" onclick="showBatchRefreshConfirm()">🔄 刷新 Token</button>
                                 <button class="btn-inline primary" onclick="showBatchDeleteConfirm()">删除</button>
                             </div>
