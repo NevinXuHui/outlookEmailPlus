@@ -21,6 +21,7 @@ from outlook_web.security.crypto import (
     is_encrypted,
 )
 from outlook_web.services import webhook_push
+from outlook_web.services.refresh import REFRESH_MAX_CONCURRENCY
 from outlook_web.services.verification_extractor import probe_verification_ai_runtime
 
 # ==================== 设置 API ====================
@@ -191,6 +192,7 @@ def api_get_settings() -> Any:
     safe_settings = {
         "refresh_interval_days": all_settings.get("refresh_interval_days", "30"),
         "refresh_delay_seconds": all_settings.get("refresh_delay_seconds", "5"),
+        "refresh_concurrency": all_settings.get("refresh_concurrency", "5"),
         "refresh_cron": all_settings.get("refresh_cron", "0 2 * * *"),
         "use_cron_schedule": all_settings.get("use_cron_schedule", "false"),
         "enable_scheduled_refresh": all_settings.get("enable_scheduled_refresh", "true"),
@@ -899,6 +901,18 @@ def api_update_settings() -> Any:
                 updated.append("刷新间隔")
         except ValueError:
             errors.append("刷新间隔必须是数字")
+
+    # 更新刷新并发数
+    if "refresh_concurrency" in data:
+        try:
+            concurrency = int(data["refresh_concurrency"])
+            if concurrency < 1 or concurrency > REFRESH_MAX_CONCURRENCY:
+                errors.append(f"刷新并发数必须在 1-{REFRESH_MAX_CONCURRENCY} 之间")
+            else:
+                queue_setting_update("refresh_concurrency", str(concurrency))
+                updated.append("刷新并发数")
+        except ValueError:
+            errors.append("刷新并发数必须是数字")
 
     # 更新 Cron 表达式
     if "refresh_cron" in data:

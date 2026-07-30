@@ -77,7 +77,9 @@ def main() -> None:
     # 初始化定时任务（与旧版行为保持一致）
     if not debug or os.getenv("WERKZEUG_RUN_MAIN") == "true":
         if scheduler_service.should_autostart_scheduler():
-            scheduler_service.init_scheduler(app, graph_service.test_refresh_token)
+            # 必须传 _with_rotation 版本：刷新链路按 (success, error, new_token)
+            # 三元组解包，旧的 test_refresh_token 只返回二元组，会直接抛 ValueError
+            scheduler_service.init_scheduler(app, graph_service.test_refresh_token_with_rotation)
         else:
             print("✓ 已根据配置跳过启动调度器")
     else:

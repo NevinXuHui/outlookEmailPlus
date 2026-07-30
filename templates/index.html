@@ -835,6 +835,14 @@
                                     </div>
                                     <div class="form-hint">建议设置为 5-10 秒，避免频繁请求触发 API 限流</div>
                                 </div>
+                                <div class="form-group">
+                                    <label class="form-label">刷新并发数 <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 400;">（同时刷新的账号数）</span></label>
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="number" class="form-input" id="refreshConcurrency" min="1" max="20" value="5" placeholder="5" style="max-width: 120px;">
+                                        <span style="font-size: 0.88rem; color: var(--text-muted); font-weight: 500;">个</span>
+                                    </div>
+                                    <div class="form-hint">默认 5，范围 1-20。设为 1 即退回串行。过高可能触发 Microsoft 端 429 限流</div>
+                                </div>
                             </div>
                         </div>
 

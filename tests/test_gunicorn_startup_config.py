@@ -47,8 +47,8 @@ class GunicornStartupConfigTests(unittest.TestCase):
         dockerfile = _read("Dockerfile")
 
         self.assertIn("GUNICORN_WORKERS=1", dockerfile)
-        self.assertIn("GUNICORN_THREADS=8", dockerfile)
-        self.assertIn("GUNICORN_TIMEOUT=120", dockerfile)
+        self.assertIn("GUNICORN_THREADS=32", dockerfile)
+        self.assertIn("GUNICORN_TIMEOUT=600", dockerfile)
         self.assertIn('CMD ["scripts/start-gunicorn.sh"]', dockerfile)
         self.assertNotIn('CMD ["gunicorn", "-w", "1"', dockerfile)
         self.assertIn("chmod +x /app/scripts/start-gunicorn.sh", dockerfile)
@@ -57,15 +57,15 @@ class GunicornStartupConfigTests(unittest.TestCase):
         compose = _read("docker-compose.yml")
 
         self.assertIn('GUNICORN_WORKERS: "${GUNICORN_WORKERS:-1}"', compose)
-        self.assertIn('GUNICORN_THREADS: "${GUNICORN_THREADS:-8}"', compose)
-        self.assertIn('GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-120}"', compose)
+        self.assertIn('GUNICORN_THREADS: "${GUNICORN_THREADS:-32}"', compose)
+        self.assertIn('GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-600}"', compose)
 
     def test_start_script_keeps_single_worker_default_with_threads(self):
         script = _read("scripts/start-gunicorn.sh")
 
         self.assertIn(': "${GUNICORN_WORKERS:=1}"', script)
-        self.assertIn(': "${GUNICORN_THREADS:=8}"', script)
-        self.assertIn(': "${GUNICORN_TIMEOUT:=120}"', script)
+        self.assertIn(': "${GUNICORN_THREADS:=32}"', script)
+        self.assertIn(': "${GUNICORN_TIMEOUT:=600}"', script)
         self.assertIn("--threads", script)
         self.assertIn("web_outlook_app:app", script)
         self.assertNotIn("--preload", script)
@@ -81,11 +81,11 @@ class GunicornStartupConfigTests(unittest.TestCase):
                 "-w",
                 "1",
                 "--threads",
-                "8",
+                "32",
                 "-b",
                 "0.0.0.0:5000",
                 "--timeout",
-                "120",
+                "600",
                 "--access-logfile",
                 "-",
                 "web_outlook_app:app",
@@ -104,6 +104,7 @@ class GunicornStartupConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        # start-gunicorn.sh 强制固定 bind 到 0.0.0.0:5000，忽略外部 GUNICORN_BIND
         self.assertEqual(
             args,
             [
@@ -112,7 +113,7 @@ class GunicornStartupConfigTests(unittest.TestCase):
                 "--threads",
                 "12",
                 "-b",
-                "127.0.0.1:5050",
+                "0.0.0.0:5000",
                 "--timeout",
                 "90",
                 "--access-logfile",

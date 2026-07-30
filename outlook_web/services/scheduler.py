@@ -26,7 +26,7 @@ from outlook_web.repositories.distributed_locks import (
     release_distributed_lock,
 )
 from outlook_web.repositories.refresh_runs import create_refresh_run, finish_refresh_run
-from outlook_web.security.crypto import decrypt_data, encrypt_data
+from outlook_web.services import refresh as refresh_service
 
 # 调度器实例
 _scheduler_instance = None
@@ -440,23 +440,21 @@ def scheduled_refresh_task(app, test_refresh_token):
         except Exception:
             pass
 
-        # PRD-00005 / TDD-00005：定时刷新只处理 Outlook 账号（IMAP 账号无 OAuth token 刷新语义）
-        accounts = conn.execute("""
-            SELECT id, email, client_id, refresh_token, group_id
-            FROM accounts
-            WHERE status = 'active'
-              AND (account_type = 'outlook' OR account_type IS NULL)
-        """).fetchall()
+        # PRD-00005 / TDD-00005：定时刷新只处理 Outlook 账号（IMAP / CF temp mail 无 OAuth token 刷新语义）
+        accounts = conn.execute(refresh_service.REFRESHABLE_OUTLOOK_ACCOUNT_SELECT).fetchall()
         total = len(accounts)
 
         # 更新 run_id 的 total
         conn.execute("UPDATE refresh_runs SET total = ? WHERE id = ?", (total, run_id))
         conn.commit()
 
-        # 计算锁 TTL
-        estimated = int(total * (max(delay_seconds, 0) + 2) + 600)
-        ttl_seconds = max(60 * 60 * 2, estimated)
-        ttl_seconds = min(ttl_seconds, 60 * 60 * 24)
+        # 计算锁 TTL（按并发波数估算，与手动刷新链路一致）
+        concurrency = refresh_service.read_refresh_concurrency(conn)
+        ttl_seconds = refresh_service.compute_refresh_lock_ttl_seconds(
+            total,
+            delay_seconds,
+            concurrency=concurrency,
+        )
 
         ok, lock_info = acquire_distributed_lock(conn, REFRESH_LOCK_NAME, lock_owner_id, ttl_seconds)
         if not ok:
@@ -464,101 +462,23 @@ def scheduled_refresh_task(app, test_refresh_token):
             return
         lock_acquired = True
 
-        success_count = 0
-        failed_count = 0
+        stats = refresh_service.RefreshBatchStats()
+        tasks = refresh_service.build_refresh_tasks(conn, accounts)
+        # 后台任务无输出通道：耗尽生成器即可，汇总结果从 stats 读取
+        for _event in refresh_service.run_refresh_batch(
+            conn,
+            tasks,
+            refresh_type="scheduled",
+            run_id=run_id,
+            test_refresh_token=test_refresh_token,
+            stats=stats,
+            concurrency=concurrency,
+            delay_seconds=delay_seconds,
+        ):
+            pass
 
-        for index, account in enumerate(accounts, 1):
-            account_id = account["id"]
-            account_email = account["email"]
-            client_id = account["client_id"]
-            encrypted_refresh_token = account["refresh_token"]
-
-            # 解密 refresh_token
-            try:
-                refresh_token = decrypt_data(encrypted_refresh_token) if encrypted_refresh_token else encrypted_refresh_token
-            except Exception as e:
-                failed_count += 1
-                error_msg = f"解密 token 失败: {str(e)}"
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO account_refresh_logs (account_id, account_email, refresh_type, status, error_message, run_id)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            account_id,
-                            account_email,
-                            "scheduled",
-                            "failed",
-                            error_msg,
-                            run_id,
-                        ),
-                    )
-                    conn.commit()
-                except Exception:
-                    pass
-                continue
-
-            # 获取分组代理设置
-            proxy_url = ""
-            group_id = account["group_id"]
-            if group_id:
-                try:
-                    group_row = conn.execute("SELECT proxy_url FROM groups WHERE id = ?", (group_id,)).fetchone()
-                    if group_row:
-                        proxy_url = group_row["proxy_url"] or ""
-                except Exception:
-                    proxy_url = ""
-
-            success, error_msg, new_refresh_token = test_refresh_token(client_id, refresh_token, proxy_url)
-
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO account_refresh_logs (account_id, account_email, refresh_type, status, error_message, run_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        account_id,
-                        account_email,
-                        "scheduled",
-                        "success" if success else "failed",
-                        error_msg,
-                        run_id,
-                    ),
-                )
-
-                if success:
-                    # refresh token 可能滚动更新：保存新的 refresh_token（加密存储）
-                    if isinstance(new_refresh_token, str) and new_refresh_token.strip() and new_refresh_token != refresh_token:
-                        conn.execute(
-                            """
-                            UPDATE accounts
-                            SET refresh_token = ?, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        """,
-                            (encrypt_data(new_refresh_token), account_id),
-                        )
-                    conn.execute(
-                        """
-                        UPDATE accounts
-                        SET last_refresh_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                    """,
-                        (account_id,),
-                    )
-
-                conn.commit()
-            except Exception:
-                pass
-
-            if success:
-                success_count += 1
-            else:
-                failed_count += 1
-
-            if index < total and delay_seconds > 0:
-                time.sleep(delay_seconds)
+        success_count = stats.success_count
+        failed_count = stats.failed_count
 
         finish_refresh_run(
             conn,

@@ -737,6 +737,10 @@ def init_db(database_path: Optional[str] = None):
             """)
         cursor.execute("""
             INSERT OR IGNORE INTO settings (key, value)
+            VALUES ('refresh_concurrency', '5')
+            """)
+        cursor.execute("""
+            INSERT OR IGNORE INTO settings (key, value)
             VALUES ('refresh_cron', '0 2 * * *')
             """)
         cursor.execute("""

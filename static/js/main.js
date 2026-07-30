@@ -1740,6 +1740,10 @@ ${details}
                     // 加载刷新配置
                     document.getElementById('refreshIntervalDays').value = data.settings.refresh_interval_days || '30';
                     document.getElementById('refreshDelaySeconds').value = data.settings.refresh_delay_seconds || '5';
+                    const refreshConcurrencyEl = document.getElementById('refreshConcurrency');
+                    if (refreshConcurrencyEl) {
+                        refreshConcurrencyEl.value = data.settings.refresh_concurrency || '5';
+                    }
                     document.getElementById('refreshCron').value = data.settings.refresh_cron || '0 2 * * *';
 
                     // 设置定时刷新开关
@@ -2033,6 +2037,7 @@ ${details}
 
             const refreshDays = document.getElementById('refreshIntervalDays').value;
             const refreshDelay = document.getElementById('refreshDelaySeconds').value;
+            const refreshConcurrency = document.getElementById('refreshConcurrency')?.value;
             const refreshCron = document.getElementById('refreshCron').value.trim();
             const strategy = document.querySelector('input[name="refreshStrategy"]:checked').value;
             const enableScheduled = document.getElementById('enableScheduledRefresh').checked;
@@ -2229,6 +2234,7 @@ ${details}
             // 刷新配置
             const days = parseInt(refreshDays);
             const delay = parseInt(refreshDelay);
+            const concurrency = parseInt(refreshConcurrency);
 
             if (isNaN(days) || days < 1 || days > 90) {
                 showToast(translateAppTextLocal('刷新周期必须在 1-90 天之间'), 'error');
@@ -2240,8 +2246,14 @@ ${details}
                 return;
             }
 
+            if (isNaN(concurrency) || concurrency < 1 || concurrency > 20) {
+                showToast(translateAppTextLocal('刷新并发数必须在 1-20 之间'), 'error');
+                return;
+            }
+
             settings.refresh_interval_days = days;
             settings.refresh_delay_seconds = delay;
+            settings.refresh_concurrency = concurrency;
             settings.use_cron_schedule = strategy === 'cron';
             settings.enable_scheduled_refresh = enableScheduled;
 
@@ -2812,6 +2824,11 @@ ${details}
 
                 const refreshDelay = parseInt(document.getElementById('refreshDelaySeconds')?.value);
                 if (!isNaN(refreshDelay) && refreshDelay >= 0 && refreshDelay <= 60) settings.refresh_delay_seconds = refreshDelay;
+
+                const refreshConcurrency = parseInt(document.getElementById('refreshConcurrency')?.value);
+                if (!isNaN(refreshConcurrency) && refreshConcurrency >= 1 && refreshConcurrency <= 20) {
+                    settings.refresh_concurrency = refreshConcurrency;
+                }
 
                 const refreshCron = document.getElementById('refreshCron')?.value?.trim();
                 if (refreshCron && strategy === 'cron') settings.refresh_cron = refreshCron;
@@ -4120,8 +4137,12 @@ ${details}
             showPersistentToast(toastId, `🔄 正在刷新 Token... 0 / ${accountIds.length}`);
 
             const controller = new AbortController();
-            const OVERALL_TIMEOUT_MS = 120000; // 2 分钟整体超时
-            const HEARTBEAT_TIMEOUT_MS = 30000; // 30 秒心跳超时
+            // 超时随账号数缩放：每账号预留 3s，并加 60s 基础缓冲；最低 120s
+            // 心跳超时需覆盖单波网络 + delay（设置允许 delay 最高 60s）
+            const OVERALL_TIMEOUT_MS = Math.max(120000, accountIds.length * 3000 + 60000);
+            const delaySetting = parseInt(document.getElementById('refreshDelaySeconds')?.value, 10);
+            const delaySeconds = Number.isFinite(delaySetting) && delaySetting >= 0 ? delaySetting : 5;
+            const HEARTBEAT_TIMEOUT_MS = Math.max(30000, (delaySeconds + 20) * 1000);
             let overallTimeoutId = null;
             let heartbeatTimeoutId = null;
             let isAborted = false;
@@ -4307,13 +4328,10 @@ ${details}
                 updatePersistentToast(toastId, `🔄 正在刷新 Token... 0 / ${total}`);
 
             } else if (data.type === 'progress') {
-                if (data.result === 'processing') {
-                    // 刚开始处理该账号
-                    updatePersistentToast(toastId, `🔄 正在刷新 Token... ${data.current - 1} / ${data.total}`);
-                } else {
-                    // 该账号刷新完成（success 或 failed）
+                // current = 已完成数（单调递增）。processing 预发事件已取消；
+                // 保留 !== 'processing' 守卫，兼容旧后端。
+                if (data.result !== 'processing') {
                     updatePersistentToast(toastId, `🔄 正在刷新 Token... ${data.current} / ${data.total}`);
-                    // 更新对应账号卡片状态
                     if (data.account_id) {
                         updateAccountCardRefreshStatus(data.account_id, data.result, data.last_refresh_at, data.error_message);
                     }
