@@ -1071,6 +1071,100 @@ textarea.form-input {
 }
 .refresh-progress-bar .progress-text { font-size: 0.78rem; white-space: nowrap; }
 
+/* ===== 导入账号：文件选择 / 进度 ===== */
+.import-file-dropzone {
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 1rem 0.9rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
+}
+.import-file-dropzone:hover,
+.import-file-dropzone.is-dragover {
+  border-color: var(--clr-primary);
+  background: rgba(184, 92, 56, 0.06);
+  box-shadow: 0 0 0 3px rgba(184, 92, 56, 0.12);
+}
+.import-file-dropzone-icon { font-size: 1.35rem; line-height: 1; margin-bottom: 0.35rem; }
+.import-file-dropzone-title {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 0.2rem;
+}
+.import-file-dropzone-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.import-file-list {
+  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.import-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.45rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.import-file-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.import-file-item-meta { color: var(--text-muted); white-space: nowrap; }
+.import-file-item-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+}
+.import-file-item-remove:hover { color: var(--clr-danger); }
+.import-progress-bar {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.8rem;
+}
+.import-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.import-progress-bar .progress-track {
+  height: 8px;
+  background: var(--border-light);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.import-progress-bar .progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--clr-jade), var(--clr-jade-light));
+  border-radius: 4px;
+  transition: width 0.25s ease;
+  width: 0%;
+}
+.import-progress-bar .progress-text { white-space: nowrap; }
+
 /* ===== Toast ===== */
 #toast-container {
   position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999;

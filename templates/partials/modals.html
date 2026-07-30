@@ -151,6 +151,21 @@
                     <div class="form-hint">当邮箱域名无法自动识别时，使用此 IMAP 服务器地址</div>
                 </div>
                 <div class="form-group">
+                    <label class="form-label">文件导入</label>
+                    <div class="import-file-dropzone" id="importFileDropzone"
+                         onclick="document.getElementById('importAccountFiles').click()"
+                         ondragover="handleImportFileDragOver(event)"
+                         ondragleave="handleImportFileDragLeave(event)"
+                         ondrop="handleImportFileDrop(event)">
+                        <input type="file" id="importAccountFiles" multiple accept=".txt,.csv,text/plain"
+                               style="display:none;" onchange="handleImportFilesSelected(event)">
+                        <div class="import-file-dropzone-icon">📄</div>
+                        <div class="import-file-dropzone-title">点击选择或拖拽文件到此处</div>
+                        <div class="import-file-dropzone-hint">支持多文件 · .txt / .csv · 与下方文本格式相同</div>
+                    </div>
+                    <div id="importFileList" class="import-file-list" style="display:none;"></div>
+                </div>
+                <div class="form-group">
                     <label class="form-label">账号信息</label>
                     <textarea class="form-textarea" id="accountInput"
                         placeholder="邮箱----密码----client_id----refresh_token（或 refresh_token----client_id）"></textarea>
@@ -163,10 +178,21 @@
                     </label>
                     <div class="form-hint">勾选后，新导入的 Outlook/IMAP 账号会以 `available` 状态进入邮箱池；不勾选则保持池外。</div>
                 </div>
+                <div class="form-group" id="importProgressGroup" style="display:none;">
+                    <div class="import-progress-bar">
+                        <div class="import-progress-meta">
+                            <span class="progress-text" id="importProgressText">准备导入…</span>
+                            <span class="progress-text" id="importProgressCount">0 / 0</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill" id="importProgressFill" style="width:0%"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="hideAddAccountModal()">取消</button>
-                <button class="btn btn-primary" onclick="addAccount()">导入</button>
+                <button class="btn btn-secondary" id="importCancelBtn" onclick="hideAddAccountModal()">取消</button>
+                <button class="btn btn-primary" id="importSubmitBtn" onclick="addAccount()">导入</button>
             </div>
         </div>
     </div>
