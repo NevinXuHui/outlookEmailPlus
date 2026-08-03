@@ -2876,3 +2876,49 @@ def api_refresh_selected_accounts() -> Any:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@login_required
+def api_get_refresh_task_status() -> Any:
+    """查询当前刷新任务状态（进度 / 是否可取消）。"""
+    db = get_db()
+    status = refresh_service.get_refresh_task_status(db=db, lock_name=REFRESH_LOCK_NAME)
+    return jsonify({"success": True, **status})
+
+
+@login_required
+def api_cancel_refresh_task() -> Any:
+    """取消当前刷新任务，并释放刷新锁以解除 REFRESH_CONFLICT。"""
+    db = get_db()
+    result = refresh_service.cancel_refresh_task(
+        db=db,
+        lock_name=REFRESH_LOCK_NAME,
+        force_unlock=True,
+    )
+    if not result.get("cancelled"):
+        return build_error_response(
+            "REFRESH_NOT_RUNNING",
+            result.get("message") or "当前没有可取消的刷新任务",
+            message_en=result.get("message_en") or "No active refresh task to cancel",
+            status=404,
+            extra=result,
+        )
+
+    try:
+        log_audit(
+            "cancel",
+            "refresh",
+            result.get("run_id"),
+            f"取消刷新任务 run_id={result.get('run_id')} lock_released={result.get('lock_released')}",
+        )
+    except Exception:
+        pass
+
+    return jsonify(
+        {
+            "success": True,
+            "message": result.get("message") or "已请求取消刷新任务",
+            "message_en": result.get("message_en") or "Refresh cancel requested",
+            **result,
+        }
+    )

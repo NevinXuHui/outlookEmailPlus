@@ -154,6 +154,16 @@ def create_blueprint() -> Blueprint:
         view_func=accounts_controller.api_get_refresh_stats,
         methods=["GET"],
     )
+    bp.add_url_rule(
+        "/api/accounts/refresh/status",
+        view_func=accounts_controller.api_get_refresh_task_status,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/api/accounts/refresh/cancel",
+        view_func=accounts_controller.api_cancel_refresh_task,
+        methods=["POST"],
+    )
 
     # Telegram 推送开关
     bp.add_url_rule(

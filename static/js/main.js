@@ -724,12 +724,170 @@
             if (section) section.style.display = 'none';
         }
 
-        function stopRefresh() {
-            // Placeholder for stopping a bulk refresh operation
-            showToast(translateAppTextLocal('刷新已停止'), 'warn');
-            const bar = document.getElementById('refreshProgressBar');
-            if (bar) bar.style.display = 'none';
+        // ==================== 全局刷新任务进度 / 取消 ====================
+        let activeRefreshControllers = new Set();
+        let activeRefreshEventSources = new Set();
+        let refreshStatusPollTimer = null;
+        let refreshUserCancelRequested = false;
+        let refreshUiState = {
+            active: false,
+            runId: null,
+            total: 0,
+            current: 0,
+            success: 0,
+            failed: 0,
+            source: '',
+        };
+
+        function registerRefreshController(controller) {
+            if (controller) activeRefreshControllers.add(controller);
         }
+
+        function unregisterRefreshController(controller) {
+            if (controller) activeRefreshControllers.delete(controller);
+        }
+
+        function registerRefreshEventSource(es) {
+            if (es) activeRefreshEventSources.add(es);
+        }
+
+        function unregisterRefreshEventSource(es) {
+            if (es) activeRefreshEventSources.delete(es);
+        }
+
+        function showGlobalRefreshProgress(current, total, text) {
+            const bar = document.getElementById('refreshProgressBar');
+            const fill = document.getElementById('refreshProgressFill');
+            const count = document.getElementById('refreshProgressCount');
+            const textEl = document.getElementById('refreshProgressText');
+            if (!bar) return;
+
+            const safeTotal = Math.max(0, Number(total) || 0);
+            const safeCurrent = Math.max(0, Math.min(Number(current) || 0, safeTotal || Number(current) || 0));
+            const percent = safeTotal > 0 ? Math.min(100, Math.round((safeCurrent / safeTotal) * 100)) : 0;
+
+            bar.style.display = 'flex';
+            if (fill) fill.style.width = `${percent}%`;
+            if (count) count.textContent = safeTotal > 0 ? `${safeCurrent} / ${safeTotal}` : `${safeCurrent}`;
+            if (textEl) textEl.textContent = text || translateAppTextLocal('正在刷新 Token…');
+
+            refreshUiState.active = true;
+            refreshUiState.total = safeTotal;
+            refreshUiState.current = safeCurrent;
+        }
+
+        function hideGlobalRefreshProgress() {
+            const bar = document.getElementById('refreshProgressBar');
+            const fill = document.getElementById('refreshProgressFill');
+            if (bar) bar.style.display = 'none';
+            if (fill) fill.style.width = '0%';
+            refreshUiState.active = false;
+            refreshUiState.runId = null;
+        }
+
+        function stopRefreshStatusPolling() {
+            if (refreshStatusPollTimer) {
+                clearInterval(refreshStatusPollTimer);
+                refreshStatusPollTimer = null;
+            }
+        }
+
+        async function pollRefreshTaskStatusOnce() {
+            try {
+                const resp = await fetch('/api/accounts/refresh/status');
+                const data = await resp.json();
+                if (!data || !data.success) return data;
+
+                if (data.active) {
+                    const total = Number(data.total || 0);
+                    const processed = Number(data.processed || 0);
+                    const statusText = data.status === 'cancelling'
+                        ? translateAppTextLocal('正在取消刷新…')
+                        : translateAppTextLocal('正在刷新 Token…');
+                    showGlobalRefreshProgress(processed, total, statusText);
+                    refreshUiState.runId = data.run_id || null;
+                    refreshUiState.success = Number(data.success_count || 0);
+                    refreshUiState.failed = Number(data.failed_count || 0);
+                    refreshUiState.source = data.trigger_source || '';
+                } else if (refreshUiState.active && activeRefreshControllers.size === 0 && activeRefreshEventSources.size === 0) {
+                    // 服务端已结束，且本页没有本地流在跑
+                    hideGlobalRefreshProgress();
+                    stopRefreshStatusPolling();
+                }
+                return data;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function startRefreshStatusPolling() {
+            stopRefreshStatusPolling();
+            pollRefreshTaskStatusOnce();
+            refreshStatusPollTimer = setInterval(pollRefreshTaskStatusOnce, 2000);
+        }
+
+        async function stopRefresh() {
+            refreshUserCancelRequested = true;
+
+            // 1) 先中断本页发起的 SSE / fetch 流
+            activeRefreshControllers.forEach((controller) => {
+                try { controller.abort(); } catch (e) {}
+            });
+            activeRefreshControllers.clear();
+
+            activeRefreshEventSources.forEach((es) => {
+                try { es.close(); } catch (e) {}
+            });
+            activeRefreshEventSources.clear();
+
+            // 2) 请求服务端取消（标记 cancelling + 释放锁）
+            try {
+                await initCSRFToken();
+                const resp = await fetch('/api/accounts/refresh/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok && data.success) {
+                    showToast(pickApiMessage(data, '已请求取消刷新任务', 'Refresh cancel requested'), 'info');
+                } else if (data && data.error && data.error.code === 'REFRESH_NOT_RUNNING') {
+                    showToast(translateAppTextLocal('当前没有进行中的刷新任务'), 'info');
+                } else {
+                    const msg = window.resolveApiErrorMessage
+                        ? window.resolveApiErrorMessage(data.error || data, '取消刷新失败', 'Failed to cancel refresh')
+                        : translateAppTextLocal('取消刷新失败');
+                    showToast(msg, 'warning', data.error || data);
+                }
+            } catch (e) {
+                showToast(translateAppTextLocal('取消刷新失败'), 'error');
+            }
+
+            showGlobalRefreshProgress(
+                refreshUiState.current,
+                refreshUiState.total,
+                translateAppTextLocal('正在取消刷新…')
+            );
+            // 继续短轮询，确认服务端真正结束后再隐藏
+            startRefreshStatusPolling();
+            setTimeout(() => {
+                pollRefreshTaskStatusOnce().then((data) => {
+                    if (!data || !data.active) {
+                        hideGlobalRefreshProgress();
+                        stopRefreshStatusPolling();
+                    }
+                });
+            }, 1500);
+        }
+
+        // 页面加载时若已有后台刷新任务，恢复进度条
+        document.addEventListener('DOMContentLoaded', () => {
+            pollRefreshTaskStatusOnce().then((data) => {
+                if (data && data.active) {
+                    startRefreshStatusPolling();
+                }
+            });
+        });
 
         // ==================== CSRF 防护 ====================
 
@@ -3337,6 +3495,10 @@ ${details}
 
             try {
                 const eventSource = new EventSource('/api/accounts/trigger-scheduled-refresh?force=true');
+                registerRefreshEventSource(eventSource);
+                refreshUserCancelRequested = false;
+                showGlobalRefreshProgress(0, 0, translateAppTextLocal('正在初始化...'));
+                startRefreshStatusPolling();
                 let totalCount = 0;
                 let successCount = 0;
                 let failedCount = 0;
@@ -3347,8 +3509,10 @@ ${details}
 
                         if (data.type === 'start') {
                             totalCount = data.total;
+                            refreshUiState.runId = data.run_id || null;
                             const delayInfo = data.delay_seconds > 0 ? `（间隔 ${data.delay_seconds} 秒）` : '';
                             progressText.innerHTML = `${translateAppTextLocal('总共')} <strong>${totalCount}</strong> ${translateAppTextLocal('个账号')}${delayInfo}，${translateAppTextLocal('准备开始刷新...')}`;
+                            showGlobalRefreshProgress(0, totalCount, translateAppTextLocal('正在刷新 Token…'));
                             // 初始化统计
                             document.getElementById('totalRefreshCount').textContent = totalCount;
                             document.getElementById('successRefreshCount').textContent = '0';
@@ -3365,13 +3529,28 @@ ${details}
                                 ${translateAppTextLocal('成功')}: <strong style="color: #28a745;">${successCount}</strong> |
                                 ${translateAppTextLocal('失败')}: <strong style="color: #dc3545;">${failedCount}</strong>
                             `;
+                            if (data.result !== 'processing') {
+                                showGlobalRefreshProgress(data.current, data.total || totalCount, translateAppTextLocal('正在刷新 Token…'));
+                            }
                         } else if (data.type === 'delay') {
                             progressText.innerHTML += `<br><span style="color: #999;">${translateAppTextLocal('等待')} ${data.seconds} ${translateAppTextLocal('秒后继续...')}</span>`;
-                        } else if (data.type === 'complete') {
+                        } else if (data.type === 'cancelled') {
+                            unregisterRefreshEventSource(eventSource);
                             eventSource.close();
                             progress.style.display = 'none';
                             btn.disabled = false;
                             btn.textContent = translateAppTextLocal('🔄 全量刷新');
+                            hideGlobalRefreshProgress();
+                            stopRefreshStatusPolling();
+                            showToast(translateAppTextLocal('刷新已取消'), 'info');
+                        } else if (data.type === 'complete') {
+                            unregisterRefreshEventSource(eventSource);
+                            eventSource.close();
+                            progress.style.display = 'none';
+                            btn.disabled = false;
+                            btn.textContent = translateAppTextLocal('🔄 全量刷新');
+                            hideGlobalRefreshProgress();
+                            stopRefreshStatusPolling();
 
                             const invalidTokenFailedCount = Number(data.invalid_token_failed_count || 0);
                             latestInvalidTokenDetectedCount = invalidTokenFailedCount;
@@ -3409,10 +3588,13 @@ ${details}
                                 loadAccountsByGroup(currentGroupId, true);
                             }
                         } else if (data.type === 'error') {
+                            unregisterRefreshEventSource(eventSource);
                             eventSource.close();
                             progress.style.display = 'none';
                             btn.disabled = false;
                             btn.textContent = translateAppTextLocal('🔄 全量刷新');
+                            hideGlobalRefreshProgress();
+                            stopRefreshStatusPolling();
 
                             const errCode = data.error && data.error.code;
                             if (errCode === 'NO_MAIL_PERMISSION') {
@@ -3424,6 +3606,7 @@ ${details}
 
                                 if (errCode === 'REFRESH_CONFLICT') {
                                     showToast(userMessage, 'warning', data.error || null, true);
+                                    startRefreshStatusPolling();
                                 } else {
                                     showToast(userMessage, 'error', data.error || null, true);
                                 }
@@ -3436,17 +3619,32 @@ ${details}
 
                 eventSource.onerror = function (error) {
                     console.error('EventSource 错误:', error);
+                    unregisterRefreshEventSource(eventSource);
                     eventSource.close();
                     progress.style.display = 'none';
                     btn.disabled = false;
                     btn.textContent = translateAppTextLocal('🔄 全量刷新');
-                    showToast(translateAppTextLocal('刷新过程中出现错误'), 'error');
+                    if (refreshUserCancelRequested) {
+                        showGlobalRefreshProgress(
+                            refreshUiState.current,
+                            refreshUiState.total,
+                            translateAppTextLocal('正在取消刷新…')
+                        );
+                        startRefreshStatusPolling();
+                        showToast(translateAppTextLocal('刷新请求已取消'), 'info');
+                    } else {
+                        hideGlobalRefreshProgress();
+                        stopRefreshStatusPolling();
+                        showToast(translateAppTextLocal('刷新过程中出现错误'), 'error');
+                    }
                 };
 
             } catch (error) {
                 progress.style.display = 'none';
                 btn.disabled = false;
                 btn.textContent = translateAppTextLocal('🔄 全量刷新');
+                hideGlobalRefreshProgress();
+                stopRefreshStatusPolling();
                 showToast(translateAppTextLocal('刷新请求失败'), 'error');
             }
         }
@@ -4132,11 +4330,15 @@ ${details}
         async function batchRefreshSelected(accountIds) {
             await initCSRFToken();
 
-            // 显示常驻进度 Toast
+            // 显示常驻进度 Toast + 顶部进度条
             const toastId = 'batch-refresh-toast-' + Date.now();
             showPersistentToast(toastId, `🔄 正在刷新 Token... 0 / ${accountIds.length}`);
+            showGlobalRefreshProgress(0, accountIds.length, translateAppTextLocal('正在刷新 Token…'));
+            startRefreshStatusPolling();
 
             const controller = new AbortController();
+            registerRefreshController(controller);
+            refreshUserCancelRequested = false;
             // 超时随账号数缩放：每账号预留 3s，并加 60s 基础缓冲；最低 120s
             // 心跳超时需覆盖单波网络 + delay（设置允许 delay 最高 60s）
             const OVERALL_TIMEOUT_MS = Math.max(120000, accountIds.length * 3000 + 60000);
@@ -4179,7 +4381,19 @@ ${details}
 
                 if (!response.ok || !response.body) {
                     clearTimers();
+                    unregisterRefreshController(controller);
                     dismissPersistentToast(toastId);
+                    hideGlobalRefreshProgress();
+                    stopRefreshStatusPolling();
+                    // 尝试解析冲突错误
+                    try {
+                        const errData = await response.json();
+                        if (errData && errData.error && errData.error.code === 'REFRESH_CONFLICT') {
+                            showToast(buildSelectedRefreshErrorSummary(errData.error), 'warning', errData.error, true);
+                            startRefreshStatusPolling();
+                            return;
+                        }
+                    } catch (e) {}
                     showToast('刷新请求失败，请稍后重试', 'error');
                     return;
                 }
@@ -4218,8 +4432,17 @@ ${details}
 
                         if (data.type === 'start') {
                             totalCount = data.total;
+                            refreshUiState.runId = data.run_id || null;
+                            showGlobalRefreshProgress(0, totalCount, translateAppTextLocal('正在刷新 Token…'));
                         }
-                        if (data.type === 'complete' || data.type === 'error') {
+                        if (data.type === 'progress' && data.result !== 'processing') {
+                            showGlobalRefreshProgress(
+                                data.current,
+                                data.total || totalCount,
+                                translateAppTextLocal('正在刷新 Token…')
+                            );
+                        }
+                        if (data.type === 'complete' || data.type === 'error' || data.type === 'cancelled') {
                             streamDone = true;
                             break;
                         }
@@ -4227,16 +4450,29 @@ ${details}
                 }
 
                 clearTimers();
+                unregisterRefreshController(controller);
             } catch (error) {
                 clearTimers();
+                unregisterRefreshController(controller);
                 dismissPersistentToast(toastId);
                 if (error.name === 'AbortError') {
-                    if (isAborted) {
+                    if (refreshUserCancelRequested) {
+                        showToast(translateAppTextLocal('刷新请求已取消'), 'info');
+                        showGlobalRefreshProgress(
+                            refreshUiState.current,
+                            refreshUiState.total,
+                            translateAppTextLocal('正在取消刷新…')
+                        );
+                    } else if (isAborted) {
+                        hideGlobalRefreshProgress();
+                        stopRefreshStatusPolling();
                         showToast('刷新请求超时，请检查网络或代理配置后重试', 'warning');
                     } else {
-                        showToast('刷新请求已取消', 'info');
+                        showToast(translateAppTextLocal('刷新请求已取消'), 'info');
                     }
                 } else {
+                    hideGlobalRefreshProgress();
+                    stopRefreshStatusPolling();
                     showToast('刷新执行出现错误，请稍后重试', 'error');
                 }
                 console.error('batchRefreshSelected error:', error);
@@ -4340,6 +4576,8 @@ ${details}
             } else if (data.type === 'complete') {
                 const { total, success_count, failed_count, failed_list } = data;
                 dismissPersistentToast(toastId);
+                hideGlobalRefreshProgress();
+                stopRefreshStatusPolling();
 
                 if (failed_count === 0) {
                     showToast(`✅ Token 刷新完成：成功 ${success_count} 个`, 'success');
@@ -4356,11 +4594,32 @@ ${details}
                     loadAccountsByGroup(currentGroupId, true);
                 }
 
+            } else if (data.type === 'cancelled') {
+                dismissPersistentToast(toastId);
+                hideGlobalRefreshProgress();
+                stopRefreshStatusPolling();
+                const successCount = Number(data.success_count || 0);
+                const failedCount = Number(data.failed_count || 0);
+                showToast(
+                    translateAppTextLocal('刷新已取消')
+                    + (successCount || failedCount
+                        ? `（成功 ${successCount}，失败 ${failedCount}）`
+                        : ''),
+                    'info'
+                );
+                if (currentGroupId) {
+                    loadAccountsByGroup(currentGroupId, true);
+                }
+
             } else if (data.type === 'error') {
                 dismissPersistentToast(toastId);
+                hideGlobalRefreshProgress();
+                stopRefreshStatusPolling();
                 const errCode = data.error && data.error.code;
                 if (errCode === 'REFRESH_CONFLICT') {
                     showToast(buildSelectedRefreshErrorSummary(data.error), 'warning', data.error || null, true);
+                    // 冲突时仍有其他任务在跑，继续展示其进度
+                    startRefreshStatusPolling();
                 } else {
                     showToast(buildSelectedRefreshErrorSummary(data.error || {}), 'error', data.error || null, true);
                 }
@@ -5092,8 +5351,13 @@ ${details}
                 }
                 showToast(msg, (failCount > 0 || moveFailed) ? 'warning' : 'success');
 
-                if (mailboxViewMode === 'compact' && typeof renderCompactAccountList === 'function' && currentGroupId && Array.isArray(accountsCache[currentGroupId])) {
-                    renderCompactAccountList(accountsCache[currentGroupId]);
+                if (mailboxViewMode === 'compact' && typeof renderCompactAccountList === 'function') {
+                    const cacheKey = typeof resolveAccountListCacheKey === 'function'
+                        ? resolveAccountListCacheKey(currentGroupId)
+                        : currentGroupId;
+                    if (Array.isArray(accountsCache[cacheKey])) {
+                        renderCompactAccountList(accountsCache[cacheKey]);
+                    }
                 }
             } catch (error) {
                 dismissPersistentToast(toastId);

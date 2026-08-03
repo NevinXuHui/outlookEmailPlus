@@ -14,16 +14,30 @@ from outlook_web.db import create_sqlite_connection
 from outlook_web.errors import build_error_payload, generate_trace_id
 from outlook_web.repositories.distributed_locks import (
     acquire_distributed_lock,
+    force_release_distributed_lock,
+    get_distributed_lock,
     release_distributed_lock,
 )
-from outlook_web.repositories.refresh_runs import create_refresh_run, finish_refresh_run
+from outlook_web.repositories.refresh_runs import (
+    create_refresh_run,
+    finish_refresh_run,
+    get_running_refresh_run,
+    is_refresh_run_cancel_requested,
+    request_cancel_refresh_run,
+    update_refresh_run_progress,
+)
 from outlook_web.security.crypto import decrypt_data, encrypt_data
 
 REFRESH_LOCK_TTL_SECONDS = 60 * 60 * 2  # 2 小时，避免异常中断导致长时间卡死
+DEFAULT_REFRESH_LOCK_NAME = "refresh_all_tokens"
 
 # 刷新并发度：默认与批量拉取邮件保持一致；设上限以抑制 Microsoft 端 429 限流风险
 REFRESH_DEFAULT_CONCURRENCY = 5
 REFRESH_MAX_CONCURRENCY = 20
+
+
+class RefreshCancelled(Exception):
+    """刷新任务被用户取消。"""
 
 
 def build_refreshable_outlook_account_where(
@@ -407,6 +421,7 @@ def run_refresh_batch(
     非流式（聚合）两类调用方可以共用同一核心。
 
     DB 写入与计数归约都在本生成器所在线程完成，因此计数器无需加锁。
+    若 run_id 对应任务被标记为 cancelling，则抛出 RefreshCancelled。
     """
     total = len(tasks)
     stats.total = total
@@ -416,6 +431,9 @@ def run_refresh_batch(
     waves = [tasks[i : i + wave_size] for i in range(0, total, wave_size)]
 
     for wave_index, wave in enumerate(waves):
+        if is_refresh_run_cancel_requested(conn, run_id):
+            raise RefreshCancelled("刷新任务已取消")
+
         for outcome in _iter_wave_outcomes(wave, test_refresh_token, concurrency):
             last_refresh_at = _persist_outcome(
                 conn,
@@ -426,6 +444,17 @@ def run_refresh_batch(
             )
             stats.absorb(outcome)
             completed += 1
+
+            try:
+                update_refresh_run_progress(
+                    conn,
+                    run_id,
+                    total=total,
+                    success_count=stats.success_count,
+                    failed_count=stats.failed_count,
+                )
+            except Exception:
+                pass
 
             yield {
                 "type": "progress",
@@ -438,14 +467,27 @@ def run_refresh_batch(
                 "last_refresh_at": last_refresh_at,
                 "success_count": stats.success_count,
                 "failed_count": stats.failed_count,
+                "run_id": run_id,
             }
+
+            if is_refresh_run_cancel_requested(conn, run_id):
+                raise RefreshCancelled("刷新任务已取消")
 
         is_last_wave = wave_index == len(waves) - 1
         if not is_last_wave and delay_seconds > 0:
+            if is_refresh_run_cancel_requested(conn, run_id):
+                raise RefreshCancelled("刷新任务已取消")
             jitter = random.uniform(0, 2)
             wait_seconds = delay_seconds + jitter
-            yield {"type": "delay", "seconds": wait_seconds}
-            time.sleep(wait_seconds)
+            yield {"type": "delay", "seconds": wait_seconds, "run_id": run_id}
+            # 分段 sleep，便于更快响应取消
+            remaining = float(wait_seconds)
+            while remaining > 0:
+                if is_refresh_run_cancel_requested(conn, run_id):
+                    raise RefreshCancelled("刷新任务已取消")
+                step = min(0.5, remaining)
+                time.sleep(step)
+                remaining -= step
 
 
 def _sse(payload: Dict[str, Any]) -> str:
@@ -564,6 +606,31 @@ def stream_refresh_all_accounts(
                 "invalid_token_failed_count": stats.invalid_token_failed_count,
                 "invalid_token_failed_list": stats.invalid_token_failed_list,
                 "run_id": run_id,
+            }
+        )
+    except RefreshCancelled:
+        try:
+            if run_id:
+                finish_refresh_run(
+                    conn,
+                    run_id,
+                    "cancelled",
+                    total if "total" in locals() else 0,
+                    stats.success_count if "stats" in locals() else 0,
+                    stats.failed_count if "stats" in locals() else 0,
+                    f"已取消：成功 {getattr(stats, 'success_count', 0) if 'stats' in locals() else 0}，失败 {getattr(stats, 'failed_count', 0) if 'stats' in locals() else 0}",
+                )
+        except Exception:
+            pass
+        yield _sse(
+            {
+                "type": "cancelled",
+                "run_id": run_id,
+                "total": total if "total" in locals() else 0,
+                "success_count": stats.success_count if "stats" in locals() else 0,
+                "failed_count": stats.failed_count if "stats" in locals() else 0,
+                "message": "刷新任务已取消",
+                "message_en": "Refresh task cancelled",
             }
         )
     except Exception as e:
@@ -741,10 +808,43 @@ def stream_trigger_scheduled_refresh(
                 "run_id": run_id,
             }
         )
+    except RefreshCancelled:
+        try:
+            if run_id:
+                finish_refresh_run(
+                    conn,
+                    run_id,
+                    "cancelled",
+                    total if "total" in locals() else 0,
+                    stats.success_count if "stats" in locals() else 0,
+                    stats.failed_count if "stats" in locals() else 0,
+                    f"已取消：成功 {getattr(stats, 'success_count', 0) if 'stats' in locals() else 0}，失败 {getattr(stats, 'failed_count', 0) if 'stats' in locals() else 0}",
+                )
+        except Exception:
+            pass
+        yield _sse(
+            {
+                "type": "cancelled",
+                "run_id": run_id,
+                "total": total if "total" in locals() else 0,
+                "success_count": stats.success_count if "stats" in locals() else 0,
+                "failed_count": stats.failed_count if "stats" in locals() else 0,
+                "message": "刷新任务已取消",
+                "message_en": "Refresh task cancelled",
+            }
+        )
     except Exception as e:
         try:
             if run_id:
-                finish_refresh_run(conn, run_id, "failed", total, success_count, failed_count, str(e))
+                finish_refresh_run(
+                    conn,
+                    run_id,
+                    "failed",
+                    total if "total" in locals() else 0,
+                    success_count if "success_count" in locals() else 0,
+                    failed_count if "failed_count" in locals() else 0,
+                    str(e),
+                )
         except Exception:
             pass
         error_payload = build_error_payload(
@@ -877,6 +977,31 @@ def stream_refresh_selected_accounts(
                 "run_id": run_id,
             }
         )
+    except RefreshCancelled:
+        try:
+            if run_id:
+                finish_refresh_run(
+                    conn,
+                    run_id,
+                    "cancelled",
+                    total if "total" in locals() else 0,
+                    stats.success_count if "stats" in locals() else 0,
+                    stats.failed_count if "stats" in locals() else 0,
+                    f"已取消：成功 {getattr(stats, 'success_count', 0) if 'stats' in locals() else 0}，失败 {getattr(stats, 'failed_count', 0) if 'stats' in locals() else 0}",
+                )
+        except Exception:
+            pass
+        yield _sse(
+            {
+                "type": "cancelled",
+                "run_id": run_id,
+                "total": total if "total" in locals() else 0,
+                "success_count": stats.success_count if "stats" in locals() else 0,
+                "failed_count": stats.failed_count if "stats" in locals() else 0,
+                "message": "刷新任务已取消",
+                "message_en": "Refresh task cancelled",
+            }
+        )
     except Exception as e:
         try:
             if run_id:
@@ -899,6 +1024,95 @@ def stream_refresh_selected_accounts(
             conn.close()
         except Exception:
             pass
+
+
+def get_refresh_task_status(
+    *,
+    db,
+    lock_name: str = DEFAULT_REFRESH_LOCK_NAME,
+) -> Dict[str, Any]:
+    """查询当前刷新任务状态（锁 + 运行记录）。"""
+    now_ts = time.time()
+    try:
+        db.execute("DELETE FROM distributed_locks WHERE expires_at < ?", (now_ts,))
+        db.commit()
+    except Exception:
+        pass
+
+    lock_info = get_distributed_lock(db, lock_name)
+    running = get_running_refresh_run(db)
+    locked = bool(lock_info)
+
+    processed = 0
+    total = 0
+    if running:
+        total = int(running.get("total") or 0)
+        processed = int(running.get("success_count") or 0) + int(running.get("failed_count") or 0)
+
+    active = locked or bool(running)
+    status = "idle"
+    if running and running.get("status") == "cancelling":
+        status = "cancelling"
+    elif active:
+        status = "running"
+
+    return {
+        "active": active,
+        "status": status,
+        "locked": locked,
+        "lock": lock_info,
+        "run": running,
+        "run_id": (running or {}).get("id"),
+        "trigger_source": (running or {}).get("trigger_source"),
+        "total": total,
+        "processed": processed,
+        "success_count": int((running or {}).get("success_count") or 0),
+        "failed_count": int((running or {}).get("failed_count") or 0),
+        "started_at": (running or {}).get("started_at"),
+        "message": (running or {}).get("message"),
+        "trace_id": (running or {}).get("trace_id"),
+        "cancelable": active,
+    }
+
+
+def cancel_refresh_task(
+    *,
+    db,
+    lock_name: str = DEFAULT_REFRESH_LOCK_NAME,
+    force_unlock: bool = True,
+) -> Dict[str, Any]:
+    """请求取消当前刷新任务。
+
+    - 将 running 标记为 cancelling，执行中的 SSE 流会在下一检查点退出
+    - force_unlock=True 时立即释放分布式锁，解除 REFRESH_CONFLICT 阻塞
+    """
+    running = get_running_refresh_run(db)
+    run_id = None
+    if running:
+        run_id = request_cancel_refresh_run(db, running.get("id"))
+
+    lock_released = False
+    if force_unlock:
+        lock_released = force_release_distributed_lock(db, lock_name)
+
+    # 若没有 running 记录但锁还在，也视为取消成功（清理卡死锁）
+    if not run_id and not lock_released:
+        # 再读一次锁状态
+        if get_distributed_lock(db, lock_name):
+            lock_released = force_release_distributed_lock(db, lock_name)
+
+    # 没有活跃任务时，对已 cancelling 的也算命中
+    if not run_id and running and running.get("status") == "cancelling":
+        run_id = running.get("id")
+
+    cancelled = bool(run_id or lock_released)
+    return {
+        "cancelled": cancelled,
+        "run_id": run_id,
+        "lock_released": lock_released,
+        "message": "已请求取消刷新任务" if cancelled else "当前没有可取消的刷新任务",
+        "message_en": "Refresh cancel requested" if cancelled else "No active refresh task to cancel",
+    }
 
 
 def refresh_failed_accounts(

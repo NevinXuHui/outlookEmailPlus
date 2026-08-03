@@ -183,7 +183,10 @@ class RefreshConcurrencyCoreTests(unittest.TestCase):
         self.assertEqual(len(delay_events), 1)
         self.assertGreaterEqual(delay_events[0]["seconds"], 5)
         self.assertLessEqual(delay_events[0]["seconds"], 7)
-        mocked_sleep.assert_called_once()
+        # delay 会分段 sleep（0.5s 步长）以便快速响应取消
+        self.assertGreaterEqual(mocked_sleep.call_count, 1)
+        slept = sum(float(call.args[0]) for call in mocked_sleep.call_args_list)
+        self.assertAlmostEqual(slept, delay_events[0]["seconds"], places=5)
 
     def test_batch_stats_records_invalid_token_failures(self):
         stats = refresh_service.RefreshBatchStats()
