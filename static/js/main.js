@@ -1087,14 +1087,18 @@
                 Notification.requestPermission();
             }
 
-            // 绑定搜索框事件
-            const searchInput = document.getElementById('globalSearch');
-            if (searchInput) {
-                const debouncedSearch = debounce((e) => {
+            // 绑定全局搜索框事件（标准模式 + 简洁模式）
+            const debouncedSearch = debounce((e) => {
+                if (typeof searchAccounts === 'function') {
                     searchAccounts(e.target.value);
-                }, 300);
-                searchInput.addEventListener('input', debouncedSearch);
-            }
+                }
+            }, 300);
+            ['globalSearch', 'compactGlobalSearch'].forEach((inputId) => {
+                const searchInput = document.getElementById(inputId);
+                if (searchInput) {
+                    searchInput.addEventListener('input', debouncedSearch);
+                }
+            });
 
             // 加载数据概览
             if (typeof initOverview === 'function') initOverview();

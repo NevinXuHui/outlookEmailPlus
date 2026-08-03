@@ -215,7 +215,7 @@
                             </div>
                         </div>
                         <div class="column-search">
-                            <input type="text" id="globalSearch" placeholder="全局搜索邮箱…" autocomplete="off">
+                            <input type="text" id="globalSearch" placeholder="全局搜索邮箱…" autocomplete="off" title="跨全部分组搜索邮箱">
                         </div>
                         <div style="padding:6px 12px;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:8px;font-size:0.78rem;flex-shrink:0;flex-wrap:wrap;">
                             <label style="color:var(--text-muted);font-weight:500;">排序：</label>
@@ -319,8 +319,9 @@
                 <div id="mailboxCompactLayout" class="mailbox-compact-layout" style="display:none;">
                     <div class="compact-board">
                         <div class="board-toolbar">
-                            <div class="toolbar-left">
+                            <div class="toolbar-left compact-toolbar-left">
                                 <span id="compactModeSummary" class="toolbar-meta compact-mode-summary">请选择分组</span>
+                                <input type="text" id="compactGlobalSearch" class="compact-global-search" placeholder="全局搜索邮箱…" autocomplete="off" title="跨全部分组搜索邮箱">
                             </div>
                             <div class="toolbar-right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                                 <label class="anomaly-filter-label" title="只显示异常邮箱：Token 失效 / 最近刷新失败 / 停用状态" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:var(--text-secondary);user-select:none;font-size:0.78rem;">

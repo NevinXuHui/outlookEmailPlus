@@ -34,19 +34,28 @@ class GlobalAccountSearchFrontendContractTests(unittest.TestCase):
         self.assertIn("所属分组", groups_js)
         self.assertIn("acc.group_name", groups_js)
 
-        # 搜索框文案提示全局搜索
+        # 搜索框文案提示全局搜索（标准模式 + 简洁模式都有入口）
         self.assertIn('id="globalSearch"', index_html)
+        self.assertIn('id="compactGlobalSearch"', index_html)
         self.assertIn("全局搜索邮箱…", index_html)
         self.assertIn("'全局搜索邮箱…'", i18n_js)
         self.assertIn("'全局搜索'", i18n_js)
         self.assertIn("'已选择搜索结果中所有 ${totalSelected} 个邮箱'", i18n_js)
+        self.assertIn("function syncGlobalSearchInputs(value)", groups_js)
+        self.assertIn("compactGlobalSearch", groups_js)
 
     def test_compact_mode_respects_global_search_cache_key(self):
         compact_js = self._read("static/js/features/mailbox_compact.js")
+        index_html = self._read("templates/index.html")
+        main_js = self._read("static/js/main.js")
         self.assertIn("resolveAccountListCacheKey", compact_js)
         self.assertIn("isGlobalAccountSearchActive", compact_js)
         self.assertIn("未找到匹配的邮箱", compact_js)
         self.assertIn("group_name", compact_js)
+        # 简洁模式必须有独立搜索入口，并与标准模式共用绑定
+        self.assertIn('id="compactGlobalSearch"', index_html)
+        self.assertIn("compact-global-search", index_html)
+        self.assertIn("'compactGlobalSearch'", main_js)
 
 
 if __name__ == "__main__":

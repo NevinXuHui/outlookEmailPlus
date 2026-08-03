@@ -104,10 +104,14 @@
                 stopAllPolls();
             }
 
-            // 清空搜索框
-            const searchInput = document.getElementById('globalSearch');
-            if (searchInput) {
-                searchInput.value = '';
+            // 清空搜索框（标准模式 + 简洁模式）
+            if (typeof syncGlobalSearchInputs === 'function') {
+                syncGlobalSearchInputs('');
+            } else {
+                const searchInput = document.getElementById('globalSearch');
+                if (searchInput) searchInput.value = '';
+                const compactSearchInput = document.getElementById('compactGlobalSearch');
+                if (compactSearchInput) compactSearchInput.value = '';
             }
 
             // 重置异常筛选复选框（标准模式 + 简洁模式）
@@ -538,6 +542,16 @@
             return Boolean(String(currentAccountSearchQuery || '').trim());
         }
 
+        function syncGlobalSearchInputs(value) {
+            const nextValue = String(value || '');
+            ['globalSearch', 'compactGlobalSearch'].forEach((inputId) => {
+                const input = document.getElementById(inputId);
+                if (input && input.value !== nextValue) {
+                    input.value = nextValue;
+                }
+            });
+        }
+
         function resolveAccountListCacheKey(groupId = currentGroupId) {
             return isGlobalAccountSearchActive() ? GLOBAL_ACCOUNT_LIST_KEY : groupId;
         }
@@ -722,6 +736,8 @@
             const container = document.getElementById('accountList');
             currentAccountSearchQuery = String(query || '').trim();
             currentAccountPage = 1;
+            // 标准/简洁模式搜索框保持同步
+            syncGlobalSearchInputs(currentAccountSearchQuery);
 
             if (!currentAccountSearchQuery) {
                 clearGlobalAccountListCache();

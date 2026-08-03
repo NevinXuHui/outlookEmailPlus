@@ -666,6 +666,27 @@ textarea.form-input {
   gap: 0.6rem;
   flex-wrap: wrap;
 }
+.compact-toolbar-left {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.compact-global-search {
+  flex: 1 1 180px;
+  min-width: 160px;
+  max-width: 360px;
+  padding: 0.42rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.82rem;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.compact-global-search:focus {
+  border-color: var(--clr-primary);
+  box-shadow: 0 0 0 3px rgba(184,92,56,0.15);
+}
 .toolbar-meta {
   font-size: 0.83rem;
   color: var(--text-secondary);
