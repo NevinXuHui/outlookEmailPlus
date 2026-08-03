@@ -130,6 +130,40 @@ class Issue56AccountsPaginationTests(unittest.TestCase):
         self.assertEqual(accounts[0].get("group_id"), group_a)
         self.assertEqual((data.get("pagination") or {}).get("total_count"), 1)
 
+    def test_accounts_api_search_without_group_id_is_global(self):
+        """不带 group_id 的 search 应跨全部分组返回匹配账号。"""
+        client = self.app.test_client()
+        self._login(client)
+        group_a = self._create_group(name="issue56_global_a")
+        group_b = self._create_group(name="issue56_global_b")
+
+        marker = f"global-search-{uuid.uuid4().hex}"
+        email_a = f"global_a_{uuid.uuid4().hex}@example.com"
+        email_b = f"global_b_{uuid.uuid4().hex}@example.com"
+        self._create_account(group_id=group_a, email_addr=email_a, remark=marker)
+        self._create_account(group_id=group_b, email_addr=email_b, remark=marker)
+
+        resp = client.get(f"/api/accounts?search={marker}&page=1&page_size=50")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json() or {}
+        self.assertEqual(data.get("success"), True)
+
+        accounts = data.get("accounts") or []
+        emails = {account.get("email") for account in accounts}
+        self.assertIn(email_a, emails)
+        self.assertIn(email_b, emails)
+        self.assertGreaterEqual((data.get("pagination") or {}).get("total_count"), 2)
+
+        group_ids = {account.get("group_id") for account in accounts if account.get("email") in {email_a, email_b}}
+        self.assertEqual(group_ids, {group_a, group_b})
+
+        # all-ids 在无 group_id 时同样应跨分组
+        ids_resp = client.get(f"/api/accounts/all-ids?search={marker}")
+        self.assertEqual(ids_resp.status_code, 200)
+        ids_data = ids_resp.get_json() or {}
+        self.assertEqual(ids_data.get("success"), True)
+        self.assertGreaterEqual(int(ids_data.get("total_count") or 0), 2)
+
     def test_accounts_api_supports_tag_filter_and_email_sort(self):
         client = self.app.test_client()
         self._login(client)

@@ -226,6 +226,7 @@ def get_all_account_ids_in_group(
     group_id: Optional[int],
     search: str = "",
     tag_ids: Optional[List[int]] = None,
+    show_anomalies: bool = False,
 ) -> List[int]:
     """获取组内所有账号ID列表（不受分页限制），用于全选等场景。"""
     db = get_db()
@@ -235,6 +236,7 @@ def get_all_account_ids_in_group(
         group_id=group_id,
         search=search,
         tag_ids=normalized_tag_ids,
+        show_anomalies=show_anomalies,
     )
 
     rows = db.execute(

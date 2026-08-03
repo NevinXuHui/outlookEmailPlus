@@ -123,7 +123,7 @@ def _outlook_basic_auth_import_error() -> str:
 
 @login_required
 def api_get_accounts() -> Any:
-    """获取账号列表（支持分页、分组内搜索、标签筛选、异常筛选与排序）"""
+    """获取账号列表（支持分页、分组/全局搜索、标签筛选、异常筛选与排序）"""
     group_id = request.args.get("group_id", type=int)
     page = request.args.get("page", default=1, type=int) or 1
     page_size = request.args.get("page_size", default=50, type=int) or 50
@@ -260,7 +260,8 @@ def api_get_all_account_ids_in_group() -> Any:
     """获取组内所有账号ID列表（不受分页限制），用于跨页全选等场景"""
     group_id = request.args.get("group_id", type=int)
     search = (request.args.get("search", type=str) or "").strip()
-    
+    show_anomalies = _parse_bool_flag(request.args.get("show_anomalies"), default=False)
+
     raw_tag_values = request.args.getlist("tag_id")
     raw_tag_values.extend((request.args.get("tag_ids", type=str) or "").split(","))
     tag_ids: List[int] = []
@@ -277,18 +278,20 @@ def api_get_all_account_ids_in_group() -> Any:
             continue
         seen_tag_ids.add(tag_id)
         tag_ids.append(tag_id)
-    
+
     account_ids = accounts_repo.get_all_account_ids_in_group(
         group_id=group_id,
         search=search,
         tag_ids=tag_ids,
+        show_anomalies=show_anomalies,
     )
-    
+
     return jsonify(
         {
             "success": True,
             "account_ids": account_ids,
             "total_count": len(account_ids),
+            "show_anomalies": show_anomalies,
         }
     )
 

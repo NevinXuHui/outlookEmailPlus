@@ -1,5 +1,8 @@
 ﻿        function getCompactVisibleAccounts() {
-            return Array.isArray(accountsCache[currentGroupId]) ? accountsCache[currentGroupId] : [];
+            const cacheKey = typeof resolveAccountListCacheKey === 'function'
+                ? resolveAccountListCacheKey(currentGroupId)
+                : currentGroupId;
+            return Array.isArray(accountsCache[cacheKey]) ? accountsCache[cacheKey] : [];
         }
 
         function getCompactAccountById(accountId) {
@@ -87,11 +90,12 @@
                 updateTopbar('mailbox');
             }
 
-            if (currentGroupId && Array.isArray(accountsCache[currentGroupId])) {
-                renderAccountList(accountsCache[currentGroupId]);
+            const visibleAccounts = getCompactVisibleAccounts();
+            if (visibleAccounts.length > 0) {
+                renderAccountList(visibleAccounts);
             }
             renderCompactGroupStrip(groups, currentGroupId);
-            renderCompactAccountList(getCompactVisibleAccounts());
+            renderCompactAccountList(visibleAccounts);
             updateBatchActionBar();
             updateSelectAllCheckbox();
 
@@ -216,6 +220,7 @@
         function renderCompactAccountList(accounts) {
             const container = document.getElementById('compactAccountList');
             if (!container) return;
+            const globalSearch = typeof isGlobalAccountSearchActive === 'function' && isGlobalAccountSearchActive();
             const pagination = typeof getAccountListMeta === 'function' ? getAccountListMeta() : {
                 page: 1,
                 total_pages: 0,
@@ -223,9 +228,12 @@
             };
 
             if (!accounts || accounts.length === 0) {
+                const emptyText = globalSearch
+                    ? translateCompactText('未找到匹配的邮箱')
+                    : translateCompactText('当前分组暂无账号');
                 container.innerHTML = `
                     <div class="empty-state-lite compact-state-block">
-                        ${escapeHtml(translateCompactText('当前分组暂无账号'))}
+                        ${escapeHtml(emptyText)}
                     </div>
                 `;
                 updateSelectAllCheckbox();
@@ -240,6 +248,11 @@
                 const latestEmailReceivedAt = account.latest_email_received_at || '';
                 const latestVerificationCode = account.latest_verification_code || '';
                 const isChecked = selectedAccountIds.has(account.id);
+                const groupName = account.group_name || translateCompactText('默认分组');
+                const groupColor = account.group_color || '#666666';
+                const groupTagHtml = globalSearch
+                    ? `<span class="tag-chip" style="background-color:${escapeHtml(groupColor)};color:white;">${escapeHtml(groupName)}</span>`
+                    : '';
                 const tagHtml = (account.tags || []).map(tag => `
                     <span class="tag-chip">${escapeHtml(tag.name)}</span>
                 `).join('');
@@ -287,7 +300,8 @@
                         </div>
                         <div data-label="${escapeHtml(translateCompactText('标签'))}">
                             <div class="tag-list">
-                                ${tagHtml || `<span class="tag-chip muted">${escapeHtml(translateCompactText('暂无标签'))}</span>`}
+                                ${groupTagHtml}
+                                ${tagHtml || (groupTagHtml ? '' : `<span class="tag-chip muted">${escapeHtml(translateCompactText('暂无标签'))}</span>`)}
                             </div>
                         </div>
                         <div class="action-cell" data-label="${escapeHtml(translateCompactText('操作'))}">

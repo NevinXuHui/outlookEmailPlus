@@ -215,12 +215,17 @@
                             </div>
                         </div>
                         <div class="column-search">
-                            <input type="text" id="globalSearch" placeholder="搜索邮箱地址…" autocomplete="off">
+                            <input type="text" id="globalSearch" placeholder="全局搜索邮箱…" autocomplete="off">
                         </div>
-                        <div style="padding:6px 12px;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:8px;font-size:0.78rem;flex-shrink:0;">
+                        <div style="padding:6px 12px;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:8px;font-size:0.78rem;flex-shrink:0;flex-wrap:wrap;">
                             <label style="color:var(--text-muted);font-weight:500;">排序：</label>
                             <button class="btn btn-sm sort-btn active" data-sort="refresh_time" onclick="sortAccounts('refresh_time')">🕐 刷新时间</button>
                             <button class="btn btn-sm sort-btn" data-sort="email" onclick="sortAccounts('email')">📧 邮箱名</button>
+                            <label class="anomaly-filter-label" title="只显示异常邮箱：Token 失效 / 最近刷新失败 / 停用状态" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:var(--text-secondary);user-select:none;margin-left:4px;">
+                                <input type="checkbox" id="showAnomaliesCheckbox" onchange="toggleShowAnomalies()" style="cursor:pointer;">
+                                <span>⚠️ 异常</span>
+                            </label>
+                            <button class="btn btn-sm btn-ghost" id="batchDetectAnomaliesBtn" onclick="batchDetectCurrentGroupOutlook()" title="批量刷新当前分组 Outlook Token，并筛选异常账号" style="margin-left:2px;">🔎 批量检测</button>
                             <div class="select-all-control" style="margin-left:auto;">
                                 <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll(event)" style="cursor:pointer;" title="选择范围：当前页或全部">
                                 <details class="action-menu select-all-menu" id="selectAllMenu">
@@ -317,7 +322,12 @@
                             <div class="toolbar-left">
                                 <span id="compactModeSummary" class="toolbar-meta compact-mode-summary">请选择分组</span>
                             </div>
-                            <div class="toolbar-right">
+                            <div class="toolbar-right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <label class="anomaly-filter-label" title="只显示异常邮箱：Token 失效 / 最近刷新失败 / 停用状态" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:var(--text-secondary);user-select:none;font-size:0.78rem;">
+                                    <input type="checkbox" id="compactShowAnomaliesCheckbox" onchange="toggleShowAnomaliesFromCompact()" style="cursor:pointer;">
+                                    <span>⚠️ 异常</span>
+                                </label>
+                                <button class="btn-inline ghost" onclick="batchDetectCurrentGroupOutlook()" title="批量刷新当前分组 Outlook Token，并筛选异常账号">🔎 批量检测</button>
                                 <button class="btn-inline ghost" onclick="showTagManagementModal()">管理标签</button>
                                 <details class="action-menu">
                                     <summary class="btn-inline ghost" aria-label="账号操作" title="账号操作">账号操作</summary>
