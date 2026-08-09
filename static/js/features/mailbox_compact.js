@@ -112,16 +112,20 @@
             if (!container) return;
 
             const visibleGroups = (groupItems || []).filter(group => !isTempMailboxGroup(group));
+            const globalSearch = typeof isGlobalAccountSearchActive === 'function' && isGlobalAccountSearchActive();
+            if (summary && globalSearch) {
+                summary.textContent = translateCompactText('全局搜索');
+            }
             if (visibleGroups.length === 0) {
                 container.innerHTML = `<div class="compact-empty-inline">${escapeHtml(translateCompactText('暂无分组'))}</div>`;
-                if (summary) {
+                if (summary && !globalSearch) {
                     summary.textContent = translateCompactText('暂无可用分组');
                 }
                 return;
             }
 
             const currentGroup = visibleGroups.find(group => group.id === activeGroupId) || visibleGroups[0];
-            if (summary && currentGroup) {
+            if (summary && currentGroup && !globalSearch) {
                 const selectedCount = selectedAccountIds.size > 0 ? ` · ${formatCompactSelectedCount(selectedAccountIds.size)}` : '';
                 summary.textContent = `${formatGroupDisplayName(currentGroup.name)} · ${formatCompactAccountCount(currentGroup.account_count)}${selectedCount}`;
             }
@@ -221,6 +225,7 @@
             const container = document.getElementById('compactAccountList');
             if (!container) return;
             const globalSearch = typeof isGlobalAccountSearchActive === 'function' && isGlobalAccountSearchActive();
+            const searchActive = typeof hasAccountSearchQuery === 'function' && hasAccountSearchQuery();
             const pagination = typeof getAccountListMeta === 'function' ? getAccountListMeta() : {
                 page: 1,
                 total_pages: 0,
@@ -228,7 +233,7 @@
             };
 
             if (!accounts || accounts.length === 0) {
-                const emptyText = globalSearch
+                const emptyText = searchActive
                     ? translateCompactText('未找到匹配的邮箱')
                     : translateCompactText('当前分组暂无账号');
                 container.innerHTML = `

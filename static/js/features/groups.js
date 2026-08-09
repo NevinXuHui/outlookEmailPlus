@@ -175,11 +175,11 @@
             // No-op: new layout uses topbar action buttons instead
         }
 
-        // 加载账号列表：有搜索词时跨全部分组；无搜索词时按分组
+        // 加载账号列表：全局搜索时跨全部分组；否则按当前分组
         async function loadAccountsByGroup(groupId, forceRefresh = false, page = currentAccountPage) {
             const container = document.getElementById('accountList');
             const cacheKey = resolveAccountListCacheKey(groupId);
-            // 全局搜索时不传 group_id；分组浏览时使用指定分组
+            // 全局搜索时不传 group_id；分组搜索/浏览时使用指定分组
             const queryGroupId = isGlobalAccountSearchActive() ? null : groupId;
 
             // 保存当前滚动位置（forceRefresh 时恢复）
@@ -263,9 +263,10 @@
         function renderAccountList(accounts) {
             const container = document.getElementById('accountList');
             const globalSearch = isGlobalAccountSearchActive();
+            const searchActive = hasAccountSearchQuery();
 
             if (!accounts || accounts.length === 0) {
-                const emptyText = globalSearch
+                const emptyText = searchActive
                     ? translateAppTextLocal('未找到匹配的邮箱')
                     : translateAppTextLocal('该分组暂无邮箱');
                 container.innerHTML = `
@@ -531,6 +532,10 @@
         let currentAccountPage = 1;
         const ACCOUNT_PAGE_SIZE = 50;
         let currentAccountSearchQuery = '';
+        const ACCOUNT_SEARCH_SCOPE_GROUP = 'group';
+        const ACCOUNT_SEARCH_SCOPE_GLOBAL = 'global';
+        // 默认保留原有全局搜索行为；用户可显式切换为当前分组搜索。
+        let currentAccountSearchScope = ACCOUNT_SEARCH_SCOPE_GLOBAL;
         const accountListMetaCache = {};
         // 全局搜索结果使用独立缓存键，避免污染分组缓存
         const GLOBAL_ACCOUNT_LIST_KEY = '__global__';
@@ -538,8 +543,78 @@
         // 异常筛选状态
         let showAnomaliesOnly = false;
 
-        function isGlobalAccountSearchActive() {
+        function hasAccountSearchQuery() {
             return Boolean(String(currentAccountSearchQuery || '').trim());
+        }
+
+        function isGlobalAccountSearchActive() {
+            return currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GLOBAL && hasAccountSearchQuery();
+        }
+
+        function normalizeAccountSearchScope(scope) {
+            return scope === ACCOUNT_SEARCH_SCOPE_GROUP
+                ? ACCOUNT_SEARCH_SCOPE_GROUP
+                : ACCOUNT_SEARCH_SCOPE_GLOBAL;
+        }
+
+        function updateAccountSearchScopeControls() {
+            const controls = [
+                { id: 'accountSearchScopeGroup', scope: ACCOUNT_SEARCH_SCOPE_GROUP },
+                { id: 'accountSearchScopeGlobal', scope: ACCOUNT_SEARCH_SCOPE_GLOBAL },
+                { id: 'compactAccountSearchScopeGroup', scope: ACCOUNT_SEARCH_SCOPE_GROUP },
+                { id: 'compactAccountSearchScopeGlobal', scope: ACCOUNT_SEARCH_SCOPE_GLOBAL }
+            ];
+            controls.forEach(({ id, scope }) => {
+                const button = document.getElementById(id);
+                if (!button) return;
+                const active = currentAccountSearchScope === scope;
+                button.classList.toggle('active', active);
+                button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+
+            const groupScope = currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GROUP;
+            const placeholder = translateAppTextLocal(groupScope ? '搜索当前分组邮箱…' : '全局搜索邮箱…');
+            const title = translateAppTextLocal(groupScope ? '仅在当前分组搜索邮箱' : '跨全部分组搜索邮箱');
+            ['globalSearch', 'compactGlobalSearch'].forEach((inputId) => {
+                const input = document.getElementById(inputId);
+                if (!input) return;
+                input.placeholder = placeholder;
+                input.title = title;
+            });
+        }
+
+        function setAccountSearchScope(scope, options = {}) {
+            const nextScope = normalizeAccountSearchScope(scope);
+            const changed = currentAccountSearchScope !== nextScope;
+            currentAccountSearchScope = nextScope;
+            clearGlobalAccountListCache();
+            updateAccountSearchScopeControls();
+            updateAccountListHeaderForSearch();
+
+            const shouldReload = options.reload !== false;
+            if (!shouldReload || !changed || !hasAccountSearchQuery()) {
+                return;
+            }
+
+            currentAccountPage = 1;
+            if (currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GROUP
+                && (currentGroupId === null || currentGroupId === undefined)) {
+                const container = document.getElementById('accountList');
+                if (container) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <span class="empty-icon">📁</span>
+                            <p>${translateAppTextLocal('请从左侧选择一个分组')}</p>
+                        </div>
+                    `;
+                }
+                if (typeof renderCompactErrorState === 'function') {
+                    renderCompactErrorState(translateAppTextLocal('请选择分组'));
+                }
+                return;
+            }
+
+            loadAccountsByGroup(currentGroupId, true, 1);
         }
 
         function syncGlobalSearchInputs(value) {
@@ -550,6 +625,7 @@
                     input.value = nextValue;
                 }
             });
+            updateAccountSearchScopeControls();
         }
 
         function resolveAccountListCacheKey(groupId = currentGroupId) {
@@ -595,7 +671,7 @@
 
         function buildAccountListQueryKey(groupId, page = currentAccountPage) {
             const params = new URLSearchParams();
-            // 全局搜索时不带 group_id，跨全部分组检索
+            // 全局搜索时不带 group_id，跨全部分组检索；分组搜索保留 group_id
             if (!isGlobalAccountSearchActive() && groupId !== null && groupId !== undefined) {
                 params.set('group_id', String(groupId));
             }
@@ -731,7 +807,7 @@
             };
         }
 
-        // 全局搜索函数：有关键词时跨全部分组；清空后回到当前分组
+        // 搜索账号：全局范围跨全部分组；分组范围仅查当前分组
         async function searchAccounts(query) {
             const container = document.getElementById('accountList');
             currentAccountSearchQuery = String(query || '').trim();
@@ -758,7 +834,24 @@
                 return;
             }
 
-            // 切换到全局搜索时丢弃旧缓存，确保使用无 group_id 的查询
+            if (currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GROUP
+                && (currentGroupId === null || currentGroupId === undefined)) {
+                updateAccountListHeaderForSearch();
+                if (container) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <span class="empty-icon">📁</span>
+                            <p>${translateAppTextLocal('请从左侧选择一个分组')}</p>
+                        </div>
+                    `;
+                }
+                if (typeof renderCompactErrorState === 'function') {
+                    renderCompactErrorState(translateAppTextLocal('请选择分组'));
+                }
+                return;
+            }
+
+            // 刷新搜索结果；全局搜索使用独立缓存，分组搜索沿用分组缓存键。
             clearGlobalAccountListCache();
             updateAccountListHeaderForSearch();
 
@@ -1436,4 +1529,3 @@
                 renderAccountList(accountsCache[cacheKey]);
             }
         });
-

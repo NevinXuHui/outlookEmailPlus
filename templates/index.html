@@ -214,8 +214,12 @@
                                 <button class="btn-icon" onclick="showAddAccountModal()" title="导入账号">+</button>
                             </div>
                         </div>
-                        <div class="column-search">
-                            <input type="text" id="globalSearch" placeholder="全局搜索邮箱…" autocomplete="off" title="跨全部分组搜索邮箱">
+                        <div class="column-search account-search-controls">
+                            <div class="account-search-scope mode-switch" role="group" aria-label="搜索范围">
+                                <button type="button" class="mode-pill" id="accountSearchScopeGroup" aria-pressed="false" onclick="setAccountSearchScope('group')" title="仅在当前分组搜索邮箱">当前分组</button>
+                                <button type="button" class="mode-pill active" id="accountSearchScopeGlobal" aria-pressed="true" onclick="setAccountSearchScope('global')" title="跨全部分组搜索邮箱">全局</button>
+                            </div>
+                            <input type="text" id="globalSearch" class="account-search-input" placeholder="全局搜索邮箱…" autocomplete="off" title="跨全部分组搜索邮箱">
                         </div>
                         <div style="padding:6px 12px;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:8px;font-size:0.78rem;flex-shrink:0;flex-wrap:wrap;">
                             <label style="color:var(--text-muted);font-weight:500;">排序：</label>
@@ -321,6 +325,10 @@
                         <div class="board-toolbar">
                             <div class="toolbar-left compact-toolbar-left">
                                 <span id="compactModeSummary" class="toolbar-meta compact-mode-summary">请选择分组</span>
+                                <div class="account-search-scope account-search-scope-compact mode-switch" role="group" aria-label="搜索范围">
+                                    <button type="button" class="mode-pill" id="compactAccountSearchScopeGroup" aria-pressed="false" onclick="setAccountSearchScope('group')" title="仅在当前分组搜索邮箱">当前分组</button>
+                                    <button type="button" class="mode-pill active" id="compactAccountSearchScopeGlobal" aria-pressed="true" onclick="setAccountSearchScope('global')" title="跨全部分组搜索邮箱">全局</button>
+                                </div>
                                 <input type="text" id="compactGlobalSearch" class="compact-global-search" placeholder="全局搜索邮箱…" autocomplete="off" title="跨全部分组搜索邮箱">
                             </div>
                             <div class="toolbar-right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">

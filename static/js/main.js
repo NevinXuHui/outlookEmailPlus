@@ -1099,6 +1099,9 @@
                     searchInput.addEventListener('input', debouncedSearch);
                 }
             });
+            if (typeof updateAccountSearchScopeControls === 'function') {
+                updateAccountSearchScopeControls();
+            }
 
             // 加载数据概览
             if (typeof initOverview === 'function') initOverview();

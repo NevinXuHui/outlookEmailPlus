@@ -339,6 +339,26 @@ input, textarea, select { font-family: inherit; }
 .column-search {
   padding: 0.5rem 1rem; border-bottom: 1px solid var(--border-light); flex-shrink: 0;
 }
+.account-search-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.account-search-scope {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--border-light);
+}
+.account-search-scope .mode-pill {
+  padding: 0.28rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  line-height: 1;
+}
 .column-search input {
   width: 100%; padding: 0.45rem 0.7rem; background: var(--bg);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -686,6 +706,9 @@ textarea.form-input {
 .compact-global-search:focus {
   border-color: var(--clr-primary);
   box-shadow: 0 0 0 3px rgba(184,92,56,0.15);
+}
+.account-search-scope-compact {
+  flex: 0 0 auto;
 }
 .toolbar-meta {
   font-size: 0.83rem;
