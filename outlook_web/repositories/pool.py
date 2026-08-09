@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 #
 # 设计决策:
 #   - FD: docs/FD/2026-04-16-邮箱池项目维度成功复用FD.md
-#   - 同 caller+project 只防 success，不防失败/release/expire（FD §2.2）
+#   - 同 project_key 只防 success，不防失败/release/expire（FD §2.2）
 #   - success_count > 0 是 claim 排除的唯一门控（TDD §4.1 N-02）
 
 RESULT_TO_POOL_STATUS: Dict[str, str] = {
@@ -271,12 +271,10 @@ def claim_atomic(
             AND NOT EXISTS (
                 SELECT 1 FROM account_project_usage apu
                 WHERE apu.account_id = a.id
-                  AND apu.consumer_key = ?
                   AND apu.project_key = ?
                   AND apu.success_count > 0
             )
         """
-        params.append(caller_id)
         params.append(project_key)
 
     sql += " ORDER BY RANDOM() LIMIT 1"

@@ -170,6 +170,30 @@ class PoolRepositoryProjectReuseTests(unittest.TestCase):
             )
             self.assertIsNone(account)
 
+    def test_claim_atomic_same_project_success_record_blocks_different_caller(self):
+        with self.app.app_context():
+            from outlook_web.db import get_db
+            from outlook_web.repositories import pool as pool_repo
+
+            account_id = self._insert_available_account(email="repo-success-block-cross-caller@example.com")
+            self._insert_usage_row(
+                account_id=account_id,
+                consumer_key="repo_bot_a",
+                project_key="project_alpha",
+                success_count=1,
+            )
+
+            db = get_db()
+            account = pool_repo.claim_atomic(
+                db,
+                caller_id="repo_bot_b",
+                task_id="repo_task_cross_caller",
+                lease_seconds=600,
+                project_key="project_alpha",
+                email_domain="example.com",
+            )
+            self.assertIsNone(account)
+
     def test_claim_atomic_leaves_claimed_project_key_empty_without_project_key(self):
         with self.app.app_context():
             from outlook_web.db import get_db
