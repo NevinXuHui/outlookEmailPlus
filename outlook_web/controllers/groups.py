@@ -303,8 +303,10 @@ def api_export_group(group_id: int) -> Any:
             details=f"group_id={group_id}",
         )
 
-    # 使用 load_accounts 获取该分组下的所有账号（自动解密）
-    accounts = accounts_repo.load_accounts(group_id)
+    # 分批加载该分组账号，避免大组 load_accounts 一次进内存
+    accounts = []
+    for batch in accounts_repo.iter_export_account_batches(group_ids=[group_id]):
+        accounts.extend(batch)
 
     if not accounts:
         return build_error_response(
@@ -325,7 +327,7 @@ def api_export_group(group_id: int) -> Any:
     # 生成导出内容（格式：email----password----client_id----refresh_token）
     lines = []
     for acc in accounts:
-        line = f"{acc['email']}----{acc.get('password', '')}----{acc['client_id']}----{acc['refresh_token']}"
+        line = f"{acc['email']}----{acc.get('password', '')}----{acc.get('client_id', '')}----{acc.get('refresh_token', '')}"
         lines.append(line)
 
     content = "\n".join(lines)

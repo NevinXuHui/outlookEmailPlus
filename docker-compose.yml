@@ -54,6 +54,11 @@ services:
 
     restart: unless-stopped
 
+    # 内存上限：防止 gunicorn 全表加载后 RSS 不回落拖死宿主机
+    # 4G 可支撑常规 API/分页；全量导出/刷新仍应走分批代码路径
+    mem_limit: ${APP_MEM_LIMIT:-4g}
+    memswap_limit: ${APP_MEMSWAP_LIMIT:-4g}
+
     # 防止日志无限增长打满磁盘
     logging:
       driver: json-file

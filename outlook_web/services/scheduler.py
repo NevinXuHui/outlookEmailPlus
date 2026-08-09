@@ -441,8 +441,8 @@ def scheduled_refresh_task(app, test_refresh_token):
             pass
 
         # PRD-00005 / TDD-00005：定时刷新只处理 Outlook 账号（IMAP / CF temp mail 无 OAuth token 刷新语义）
-        accounts = conn.execute(refresh_service.REFRESHABLE_OUTLOOK_ACCOUNT_SELECT).fetchall()
-        total = len(accounts)
+        # 分批加载+解密，避免百万账号一次进内存
+        total = refresh_service.count_refreshable_outlook_accounts(conn)
 
         # 更新 run_id 的 total
         conn.execute("UPDATE refresh_runs SET total = ? WHERE id = ?", (total, run_id))
@@ -463,17 +463,17 @@ def scheduled_refresh_task(app, test_refresh_token):
         lock_acquired = True
 
         stats = refresh_service.RefreshBatchStats()
-        tasks = refresh_service.build_refresh_tasks(conn, accounts)
         # 后台任务无输出通道：耗尽生成器即可，汇总结果从 stats 读取
-        for _event in refresh_service.run_refresh_batch(
+        for _event in refresh_service._run_refresh_account_row_batches(
             conn,
-            tasks,
+            refresh_service.iter_refreshable_outlook_account_batches(conn),
             refresh_type="scheduled",
             run_id=run_id,
             test_refresh_token=test_refresh_token,
             stats=stats,
             concurrency=concurrency,
             delay_seconds=delay_seconds,
+            progress_total=total,
         ):
             pass
 

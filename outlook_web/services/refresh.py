@@ -57,6 +57,56 @@ REFRESHABLE_OUTLOOK_ACCOUNT_SELECT = f"""
       AND {REFRESHABLE_OUTLOOK_ACCOUNT_WHERE}
 """
 
+# 全量刷新按 id 游标分批加载/解密，避免 100 万账号一次进内存
+REFRESH_ACCOUNT_BATCH_SIZE = 500
+
+
+def count_refreshable_outlook_accounts(conn) -> int:
+    """统计可刷新 Outlook 账号数，不加载 token 行。"""
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM accounts
+        WHERE status = 'active'
+          AND {REFRESHABLE_OUTLOOK_ACCOUNT_WHERE}
+        """
+    ).fetchone()
+    return int((row["c"] if row else 0) or 0)
+
+
+def iter_refreshable_outlook_account_batches(
+    conn,
+    *,
+    batch_size: int = REFRESH_ACCOUNT_BATCH_SIZE,
+):
+    """按 id 升序分批 yield 可刷新账号行。
+
+    调用方应在每批处理完后丢弃引用，以便 GC 回收 decrypt 后的 token 字符串。
+    """
+    try:
+        size = max(50, min(int(batch_size or REFRESH_ACCOUNT_BATCH_SIZE), 5000))
+    except (TypeError, ValueError):
+        size = REFRESH_ACCOUNT_BATCH_SIZE
+
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            f"""
+            SELECT id, email, client_id, refresh_token, group_id
+            FROM accounts
+            WHERE status = 'active'
+              AND {REFRESHABLE_OUTLOOK_ACCOUNT_WHERE}
+              AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (last_id, size),
+        ).fetchall()
+        if not rows:
+            break
+        yield rows
+        last_id = int(rows[-1]["id"])
+
 
 def is_refreshable_outlook_account(
     account_type: Optional[str],
@@ -414,6 +464,9 @@ def run_refresh_batch(
     concurrency: int = 1,
     delay_seconds: int = 0,
     read_back_last_refresh_at: bool = False,
+    progress_offset: int = 0,
+    progress_total: Optional[int] = None,
+    is_final_batch: bool = True,
 ) -> Iterator[Dict[str, Any]]:
     """分波并发执行刷新，产出 progress / delay 事件。
 
@@ -422,13 +475,17 @@ def run_refresh_batch(
 
     DB 写入与计数归约都在本生成器所在线程完成，因此计数器无需加锁。
     若 run_id 对应任务被标记为 cancelling，则抛出 RefreshCancelled。
+
+    progress_offset / progress_total 用于跨批次汇报全局进度，避免全量
+    账号一次 build_refresh_tasks 解密进内存。
     """
-    total = len(tasks)
+    batch_len = len(tasks)
+    total = int(progress_total) if progress_total is not None else batch_len
     stats.total = total
-    completed = 0
+    completed = max(0, int(progress_offset or 0))
 
     wave_size = max(1, concurrency)
-    waves = [tasks[i : i + wave_size] for i in range(0, total, wave_size)]
+    waves = [tasks[i : i + wave_size] for i in range(0, batch_len, wave_size)] if batch_len else []
 
     for wave_index, wave in enumerate(waves):
         if is_refresh_run_cancel_requested(conn, run_id):
@@ -474,13 +531,14 @@ def run_refresh_batch(
                 raise RefreshCancelled("刷新任务已取消")
 
         is_last_wave = wave_index == len(waves) - 1
-        if not is_last_wave and delay_seconds > 0:
+        # 波间 delay；非最终批次的末波后也 delay，避免批次间隙打满上游
+        should_delay = delay_seconds > 0 and ((not is_last_wave) or (not is_final_batch))
+        if should_delay:
             if is_refresh_run_cancel_requested(conn, run_id):
                 raise RefreshCancelled("刷新任务已取消")
             jitter = random.uniform(0, 2)
             wait_seconds = delay_seconds + jitter
             yield {"type": "delay", "seconds": wait_seconds, "run_id": run_id}
-            # 分段 sleep，便于更快响应取消
             remaining = float(wait_seconds)
             while remaining > 0:
                 if is_refresh_run_cancel_requested(conn, run_id):
@@ -488,6 +546,59 @@ def run_refresh_batch(
                 step = min(0.5, remaining)
                 time.sleep(step)
                 remaining -= step
+
+
+def _run_refresh_account_row_batches(
+    conn,
+    row_batches,
+    *,
+    refresh_type: str,
+    run_id: Optional[str],
+    test_refresh_token: Callable[[str, str, Optional[str]], Tuple[bool, Optional[str], Optional[str]]],
+    stats: RefreshBatchStats,
+    concurrency: int = 1,
+    delay_seconds: int = 0,
+    read_back_last_refresh_at: bool = False,
+    progress_total: int,
+) -> Iterator[Dict[str, Any]]:
+    """流式消费 row batch 迭代器并刷新。"""
+    offset = 0
+    pending = None
+    iterator = iter(row_batches)
+
+    def _next_batch():
+        nonlocal pending
+        if pending is not None:
+            item = pending
+            pending = None
+            return item
+        return next(iterator, None)
+
+    current = _next_batch()
+    while current is not None:
+        nxt = _next_batch()
+        is_final = nxt is None
+        tasks = build_refresh_tasks(conn, current)
+        for event in run_refresh_batch(
+            conn,
+            tasks,
+            refresh_type=refresh_type,
+            run_id=run_id,
+            test_refresh_token=test_refresh_token,
+            stats=stats,
+            concurrency=concurrency,
+            delay_seconds=delay_seconds,
+            read_back_last_refresh_at=read_back_last_refresh_at,
+            progress_offset=offset,
+            progress_total=progress_total,
+            is_final_batch=is_final,
+        ):
+            yield event
+        offset += len(tasks)
+        del tasks
+        del current
+        current = nxt
+        pending = None
 
 
 def _sse(payload: Dict[str, Any]) -> str:
@@ -539,8 +650,7 @@ def stream_refresh_all_accounts(
         except Exception:
             pass
 
-        accounts = conn.execute(REFRESHABLE_OUTLOOK_ACCOUNT_SELECT).fetchall()
-        total = len(accounts)
+        total = count_refreshable_outlook_accounts(conn)
 
         run_id = create_refresh_run(
             conn,
@@ -573,16 +683,16 @@ def stream_refresh_all_accounts(
             }
         )
 
-        tasks = build_refresh_tasks(conn, accounts)
-        for event in run_refresh_batch(
+        for event in _run_refresh_account_row_batches(
             conn,
-            tasks,
+            iter_refreshable_outlook_account_batches(conn),
             refresh_type="manual_all",
             run_id=run_id,
             test_refresh_token=test_refresh_token,
             stats=stats,
             concurrency=concurrency,
             delay_seconds=delay_seconds,
+            progress_total=total,
         ):
             yield _sse(event)
 
@@ -692,9 +802,8 @@ def stream_trigger_scheduled_refresh(
         except Exception:
             pass
 
-        accounts = conn.execute(REFRESHABLE_OUTLOOK_ACCOUNT_SELECT).fetchall()
-
-        total = len(accounts)
+        # 先 count + 周期判断，避免 skip 场景也全表加载 token
+        total = count_refreshable_outlook_accounts(conn)
         run_id = create_refresh_run(
             conn,
             trigger_source="scheduled_manual",
@@ -770,16 +879,16 @@ def stream_trigger_scheduled_refresh(
             }
         )
 
-        tasks = build_refresh_tasks(conn, accounts)
-        for event in run_refresh_batch(
+        for event in _run_refresh_account_row_batches(
             conn,
-            tasks,
+            iter_refreshable_outlook_account_batches(conn),
             refresh_type="scheduled",
             run_id=run_id,
             test_refresh_token=test_refresh_token,
             stats=stats,
             concurrency=concurrency,
             delay_seconds=delay_seconds,
+            progress_total=total,
         ):
             yield _sse(event)
 

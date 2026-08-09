@@ -459,7 +459,40 @@ def probe_account_upstream(
 
 
 def _pick_instance_probe_account() -> Optional[Dict[str, Any]]:
-    candidates = accounts_repo.load_accounts()
+    """选择 1 个可读账号做实例上游探测。
+
+    旧实现调用 load_accounts() 全表加载，百万账号场景会把 /api/external/health 拖死。
+    现改为：
+    1. 优先复用上次 instance probe 记录的 email
+    2. 否则只取少量 active 候选账号（默认 8）
+    """
+    # 1) 优先复用上次探测邮箱，避免重复选号与解密
+    try:
+        from outlook_web.db import get_db
+
+        row = get_db().execute(
+            """
+            SELECT email_addr
+            FROM external_upstream_probes
+            WHERE scope_type = ? AND scope_key = ?
+            LIMIT 1
+            """,
+            ("instance", "__instance__"),
+        ).fetchone()
+        email_addr = str((row["email_addr"] if row else "") or "").strip()
+        if email_addr:
+            account = accounts_repo.get_account_by_email(email_addr)
+            if account and _account_can_read(account):
+                return account
+    except Exception:
+        pass
+
+    # 2) 轻量候选集，不再全表扫描
+    try:
+        candidates = accounts_repo.load_probe_candidate_accounts(limit=8)
+    except Exception:
+        candidates = []
+
     for account in candidates:
         if _account_can_read(account):
             return account

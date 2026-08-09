@@ -698,6 +698,27 @@ class ExternalApiSystemTests(ExternalApiBaseTest):
         self.assertTrue(resp.get_json().get("data", {}).get("upstream_probe_ok"))
         mock_probe_instance_upstream.assert_called_once()
 
+    def test_pick_instance_probe_account_avoids_full_table_load(self):
+        """实例探测选号不得再调用 load_accounts 全表加载。"""
+        email_addr = self._insert_outlook_account()
+        with self.app.app_context():
+            from outlook_web.services import external_api as external_api_service
+
+            with patch(
+                "outlook_web.services.external_api.accounts_repo.load_accounts",
+                side_effect=AssertionError("load_accounts must not be used for probe pick"),
+            ) as mock_load_all:
+                with patch(
+                    "outlook_web.services.external_api.accounts_repo.load_probe_candidate_accounts",
+                    wraps=external_api_service.accounts_repo.load_probe_candidate_accounts,
+                ) as mock_load_candidates:
+                    account = external_api_service._pick_instance_probe_account()
+
+            self.assertIsNotNone(account)
+            self.assertEqual(account.get("email"), email_addr)
+            mock_load_all.assert_not_called()
+            mock_load_candidates.assert_called()
+
     @patch("outlook_web.services.external_api.graph_service.get_emails_graph")
     def test_external_account_status_returns_account_data_and_audits(self, mock_get_emails_graph):
         email_addr = self._insert_outlook_account()

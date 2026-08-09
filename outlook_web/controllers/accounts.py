@@ -2206,6 +2206,18 @@ def _build_export_text(accounts: List[Dict[str, Any]], temp_emails: Optional[Lis
     return buf.getvalue()
 
 
+def _collect_export_accounts_batched(group_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """分批 hydrate 导出账号，避免一次 load_accounts 全表进内存。
+
+    仍会组装完整 list 供 _build_export_text 使用，但峰值只保留当前 batch 的
+    ORM/dict 中间态；相对旧实现可显著降低解密副本叠加。
+    """
+    collected: List[Dict[str, Any]] = []
+    for batch in accounts_repo.iter_export_account_batches(group_ids=group_ids):
+        collected.extend(batch)
+    return collected
+
+
 @login_required
 def api_export_all_accounts() -> Any:
     """导出所有邮箱账号为 TXT 文件（需要二次验证）"""
@@ -2224,8 +2236,8 @@ def api_export_all_accounts() -> Any:
     if not ok:
         return build_export_verify_failure_response(error_message)
 
-    # 使用 load_accounts 获取所有账号（自动解密）
-    accounts = accounts_repo.load_accounts()
+    # 分批加载+解密，避免 load_accounts 全表
+    accounts = _collect_export_accounts_batched()
 
     # 加载临时邮箱
     from outlook_web.repositories import temp_emails as temp_emails_repo
@@ -2288,11 +2300,8 @@ def api_export_selected_accounts() -> Any:
             message_en="Please select at least one group to export",
         )
 
-    # 获取选中分组下的所有账号（使用 load_accounts 自动解密）
-    all_accounts = []
-    for group_id in group_ids:
-        accounts = accounts_repo.load_accounts(group_id)
-        all_accounts.extend(accounts)
+    # 分批按 group_ids 加载，避免对每个大组 load_accounts(group_id)
+    all_accounts = _collect_export_accounts_batched(group_ids=list(group_ids))
 
     # 仅当选中了"临时邮箱"系统分组时才附加临时邮箱
     from outlook_web.repositories import temp_emails as temp_emails_repo

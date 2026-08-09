@@ -325,17 +325,8 @@ def save_to_account() -> Any:
 @login_required
 def get_account_list() -> Any:
     _ensure_oauth_tool_enabled()
-    accounts = accounts_repo.load_accounts()
-    result = [
-        {
-            "id": account["id"],
-            "email": account["email"],
-            "status": account.get("status", "active"),
-            "account_type": account.get("account_type", "outlook"),
-        }
-        for account in accounts
-        if account.get("account_type") in ("outlook", None)
-    ]
+    # 轻量字段列表，禁止 load_accounts 全表解密
+    result = accounts_repo.load_oauth_account_summaries()
     return jsonify({"success": True, "data": result})
 
 

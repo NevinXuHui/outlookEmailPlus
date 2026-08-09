@@ -82,7 +82,8 @@ def _normalize_temp_email_source(temp_email: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_email_notification_sources() -> list[dict[str, Any]]:
-    accounts = [acc for acc in accounts_repo.load_accounts() if (acc.get("status") or "active") == "active"]
+    # 仅加载通知参与账号，避免百万 active 账号全表 hydrate
+    accounts = accounts_repo.load_notification_participant_accounts()
     temp_emails = [item for item in temp_emails_repo.load_temp_emails() if (item.get("status") or "active") == "active"]
     return [_normalize_account_source(acc) for acc in accounts] + [_normalize_temp_email_source(item) for item in temp_emails]
 

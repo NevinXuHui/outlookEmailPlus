@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from outlook_web.db import get_db
 from outlook_web.security.crypto import decrypt_data, encrypt_data
+
+# 导出/后台批处理默认批次，避免百万账号一次 hydrate 撑爆内存
+ACCOUNT_EXPORT_BATCH_SIZE = 500
 
 COMPACT_SUMMARY_FIELDS = (
     "latest_email_subject",
@@ -106,7 +109,12 @@ def _hydrate_accounts(rows: List[sqlite3.Row], db: sqlite3.Connection) -> List[D
 
 
 def load_accounts(group_id: int = None) -> List[Dict]:
-    """从数据库加载邮箱账号（自动解密敏感字段，批量加载 tags 避免 N+1）"""
+    """从数据库加载邮箱账号（自动解密敏感字段，批量加载 tags 避免 N+1）。
+
+    警告：百万级账号场景会占用数 GB 内存。新代码请优先使用
+    ``load_accounts_page`` / ``iter_export_account_batches`` /
+    ``load_oauth_account_summaries`` / ``load_notification_participant_accounts``。
+    """
     db = get_db()
     if group_id:
         cursor = db.execute(
@@ -127,6 +135,166 @@ def load_accounts(group_id: int = None) -> List[Dict]:
             ORDER BY a.created_at DESC
         """)
     rows = cursor.fetchall()
+    return _hydrate_accounts(rows, db)
+
+
+def count_accounts(group_id: Optional[int] = None) -> int:
+    """统计账号数量（可选按分组），不加载行数据。"""
+    db = get_db()
+    if group_id is None:
+        row = db.execute("SELECT COUNT(*) AS c FROM accounts").fetchone()
+    else:
+        row = db.execute(
+            "SELECT COUNT(*) AS c FROM accounts WHERE group_id = ?",
+            (group_id,),
+        ).fetchone()
+    return int((row["c"] if row else 0) or 0)
+
+
+def load_oauth_account_summaries() -> List[Dict[str, Any]]:
+    """OAuth Token 工具账号列表：仅返回轻量字段，不解密凭据。"""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, email, status, account_type
+        FROM accounts
+        WHERE account_type = 'outlook' OR account_type IS NULL OR TRIM(account_type) = ''
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "email": row["email"],
+            "status": row["status"] or "active",
+            "account_type": row["account_type"] or "outlook",
+        }
+        for row in rows
+    ]
+
+
+def load_notification_participant_accounts() -> List[Dict[str, Any]]:
+    """仅加载开启通知参与（telegram_push_enabled=1）的 active 账号。
+
+    通知任务不得再走 load_accounts 全表 hydrate。
+    """
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT a.*, g.name as group_name, g.color as group_color
+        FROM accounts a
+        LEFT JOIN groups g ON a.group_id = g.id
+        WHERE LOWER(COALESCE(a.status, 'active')) = 'active'
+          AND COALESCE(a.telegram_push_enabled, 0) = 1
+        ORDER BY a.id ASC
+        """
+    ).fetchall()
+    return _hydrate_accounts(rows, db)
+
+
+def iter_export_account_batches(
+    group_ids: Optional[Sequence[int]] = None,
+    *,
+    batch_size: int = ACCOUNT_EXPORT_BATCH_SIZE,
+) -> Iterator[List[Dict[str, Any]]]:
+    """按 id 游标分批加载导出所需账号字段并解密，避免一次 materialize 全表。
+
+    只 SELECT 导出用到的列，降低单行内存与解密范围。
+    """
+    db = get_db()
+    try:
+        size = max(50, min(int(batch_size or ACCOUNT_EXPORT_BATCH_SIZE), 5000))
+    except (TypeError, ValueError):
+        size = ACCOUNT_EXPORT_BATCH_SIZE
+
+    normalized_group_ids: List[int] = []
+    for raw in group_ids or []:
+        try:
+            normalized_group_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+
+    last_id = 0
+    while True:
+        params: List[Any] = [last_id]
+        group_sql = ""
+        if normalized_group_ids:
+            placeholders = ",".join("?" * len(normalized_group_ids))
+            group_sql = f" AND group_id IN ({placeholders})"
+            params.extend(normalized_group_ids)
+        params.append(size)
+
+        rows = db.execute(
+            f"""
+            SELECT
+                id,
+                email,
+                password,
+                client_id,
+                refresh_token,
+                account_type,
+                provider,
+                imap_host,
+                imap_port,
+                imap_password
+            FROM accounts
+            WHERE id > ?
+              {group_sql}
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        if not rows:
+            break
+
+        batch: List[Dict[str, Any]] = []
+        for row in rows:
+            account = dict(row)
+            _decrypt_account_field(account, "password")
+            _decrypt_account_field(account, "refresh_token")
+            _decrypt_account_field(account, "imap_password")
+            batch.append(account)
+
+        last_id = int(rows[-1]["id"])
+        yield batch
+
+
+def load_probe_candidate_accounts(limit: int = 8) -> List[Dict[str, Any]]:
+    """为实例上游探测加载少量候选账号，避免全表 load_accounts。
+
+    仅按库内非空凭据字段粗筛 active 账号；最终可读性仍由调用方二次判断。
+    """
+    db = get_db()
+    try:
+        candidate_limit = int(limit or 8)
+    except (TypeError, ValueError):
+        candidate_limit = 8
+    candidate_limit = max(1, min(candidate_limit, 50))
+
+    rows = db.execute(
+        """
+        SELECT a.*, g.name as group_name, g.color as group_color
+        FROM accounts a
+        LEFT JOIN groups g ON a.group_id = g.id
+        WHERE LOWER(COALESCE(a.status, 'active')) = 'active'
+          AND (
+            (
+              LOWER(COALESCE(a.account_type, 'outlook')) <> 'imap'
+              AND TRIM(COALESCE(a.client_id, '')) <> ''
+              AND TRIM(COALESCE(a.refresh_token, '')) <> ''
+            )
+            OR (
+              LOWER(COALESCE(a.account_type, 'outlook')) = 'imap'
+              AND TRIM(COALESCE(a.imap_host, '')) <> ''
+              AND TRIM(COALESCE(a.imap_password, '')) <> ''
+            )
+          )
+        ORDER BY a.id DESC
+        LIMIT ?
+        """,
+        (candidate_limit,),
+    ).fetchall()
     return _hydrate_accounts(rows, db)
 
 
