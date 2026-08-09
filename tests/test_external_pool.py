@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from unittest import mock
 
 from tests._import_app import clear_login_attempts, import_web_app_module
 
@@ -240,6 +241,47 @@ class ExternalPoolApiTests(unittest.TestCase):
         self.assertIn("account_id", payload)
         self.assertIn("claim_token", payload)
         self.assertIn("lease_expires_at", payload)
+
+    def test_external_pool_claim_random_rejects_unhealthy_account(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+        account_id = self._insert_pool_account(provider="outlook")
+
+        from outlook_web.services import pool as pool_service
+
+        with mock.patch.dict("os.environ", {"POOL_CLAIM_HEALTH_CHECK_IN_TESTS": "true"}), mock.patch.object(
+            pool_service.graph_service,
+            "test_refresh_token_with_rotation",
+            return_value=(False, "invalid_grant", None),
+        ):
+            resp = client.post(
+                "/api/external/pool/claim-random",
+                headers=self._auth_headers(),
+                json={
+                    "caller_id": "ext-worker-01",
+                    "task_id": "task-ext-health",
+                    "provider": "outlook",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("code"), "NO_AVAILABLE_ACCOUNT")
+
+        with self.app.app_context():
+            from outlook_web.db import get_db
+
+            row = get_db().execute(
+                "SELECT pool_status, last_result FROM accounts WHERE id = ?",
+                (account_id,),
+            ).fetchone()
+            self.assertEqual(row["pool_status"], "retired")
+            self.assertEqual(row["last_result"], "credential_invalid")
 
     def test_external_pool_post_does_not_require_csrf(self):
         client = self.app.test_client()

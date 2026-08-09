@@ -229,6 +229,14 @@
                                 <input type="checkbox" id="showAnomaliesCheckbox" onchange="toggleShowAnomalies()" style="cursor:pointer;">
                                 <span>⚠️ 异常</span>
                             </label>
+                            <div class="account-sender-filter" title="逐个拉取当前分组邮件并按发件人筛选">
+                                <select id="accountSenderMatchMode" class="account-sender-match-mode" aria-label="发件人匹配方式">
+                                    <option value="has">有匹配</option>
+                                    <option value="not_has">无匹配</option>
+                                </select>
+                                <input type="text" id="accountSenderFilter" class="account-sender-filter-input" placeholder="发件人筛选…" autocomplete="off">
+                                <input type="number" id="accountSenderTop" class="account-sender-top-input" min="1" max="100" value="20" title="每个文件夹拉取最新几封邮件" aria-label="每个文件夹拉取最新几封邮件">
+                            </div>
                             <button class="btn btn-sm btn-ghost" id="batchDetectAnomaliesBtn" onclick="batchDetectCurrentGroupOutlook()" title="批量刷新当前分组 Outlook Token，并筛选异常账号" style="margin-left:2px;">🔎 批量检测</button>
                             <div class="select-all-control" style="margin-left:auto;">
                                 <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll(event)" style="cursor:pointer;" title="选择范围：当前页或全部">
@@ -336,6 +344,14 @@
                                     <input type="checkbox" id="compactShowAnomaliesCheckbox" onchange="toggleShowAnomaliesFromCompact()" style="cursor:pointer;">
                                     <span>⚠️ 异常</span>
                                 </label>
+                                <div class="account-sender-filter account-sender-filter-compact" title="逐个拉取当前分组邮件并按发件人筛选">
+                                    <select id="compactAccountSenderMatchMode" class="account-sender-match-mode" aria-label="发件人匹配方式">
+                                        <option value="has">有匹配</option>
+                                        <option value="not_has">无匹配</option>
+                                    </select>
+                                    <input type="text" id="compactAccountSenderFilter" class="account-sender-filter-input" placeholder="发件人筛选…" autocomplete="off">
+                                    <input type="number" id="compactAccountSenderTop" class="account-sender-top-input" min="1" max="100" value="20" title="每个文件夹拉取最新几封邮件" aria-label="每个文件夹拉取最新几封邮件">
+                                </div>
                                 <button class="btn-inline ghost" onclick="batchDetectCurrentGroupOutlook()" title="批量刷新当前分组 Outlook Token，并筛选异常账号">🔎 批量检测</button>
                                 <button class="btn-inline ghost" onclick="showTagManagementModal()">管理标签</button>
                                 <details class="action-menu">

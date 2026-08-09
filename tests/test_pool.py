@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 from tests._import_app import import_web_app_module
 
@@ -796,6 +797,62 @@ class PoolServiceTests(unittest.TestCase):
         result = self.pool_service.claim_random(caller_id="bot", task_id="t1")
         self.assertIn("claim_token", result)
         self.assertIn("lease_expires_at", result)
+
+    def test_claim_random_rejects_unhealthy_account_before_returning(self):
+        account_id = self._make_account()
+
+        with mock.patch.dict("os.environ", {"POOL_CLAIM_HEALTH_CHECK_IN_TESTS": "true"}), mock.patch.object(
+            self.pool_service.graph_service,
+            "test_refresh_token_with_rotation",
+            return_value=(False, "invalid_grant", None),
+        ):
+            with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
+                self.pool_service.claim_random(caller_id="bot", task_id="t_health")
+
+        self.assertEqual(ctx.exception.http_status, 200)
+        self.assertEqual(ctx.exception.error_code, "no_available_account")
+
+        conn = self.create_conn()
+        try:
+            row = conn.execute(
+                "SELECT pool_status, last_result FROM accounts WHERE id = ?",
+                (account_id,),
+            ).fetchone()
+            self.assertEqual(row["pool_status"], "retired")
+            self.assertEqual(row["last_result"], "credential_invalid")
+        finally:
+            conn.close()
+
+    def test_claim_random_continues_after_unhealthy_candidate(self):
+        bad_account = {"id": 1, "email": "bad@example.com", "claim_token": "clm_bad"}
+        good_account = {"id": 2, "email": "good@example.com", "claim_token": "clm_good"}
+        seen_excluded_ids = []
+
+        def fake_claim_atomic(*args, **kwargs):
+            seen_excluded_ids.append(list(kwargs.get("exclude_account_ids") or []))
+            return bad_account if len(seen_excluded_ids) == 1 else good_account
+
+        with mock.patch.object(
+            self.pool_service.pool_repo,
+            "claim_atomic",
+            side_effect=fake_claim_atomic,
+        ), mock.patch.object(
+            self.pool_service,
+            "_check_claimed_account_health",
+            side_effect=[
+                self.pool_service.PoolClaimHealthResult(
+                    False,
+                    result="credential_invalid",
+                    detail="invalid_grant",
+                ),
+                self.pool_service.PoolClaimHealthResult(True),
+            ],
+        ), mock.patch.object(self.pool_service, "_complete_failed_claim_health_check") as complete_mock:
+            result = self.pool_service.claim_random(caller_id="bot", task_id="t_health_next", provider="outlook")
+
+        self.assertEqual(result["id"], 2)
+        self.assertEqual(seen_excluded_ids, [[], [1]])
+        complete_mock.assert_called_once()
 
     def test_claim_random_caller_id_validation(self):
         with self.assertRaises(self.pool_service.PoolServiceError) as ctx:

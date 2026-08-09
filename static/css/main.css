@@ -359,6 +359,10 @@ input, textarea, select { font-family: inherit; }
   font-size: 0.72rem;
   line-height: 1;
 }
+.account-search-scope .mode-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .column-search input {
   width: 100%; padding: 0.45rem 0.7rem; background: var(--bg);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -709,6 +713,97 @@ textarea.form-input {
 }
 .account-search-scope-compact {
   flex: 0 0 auto;
+}
+.account-sender-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.account-sender-match-mode,
+.account-sender-filter-input,
+.account-sender-top-input {
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.78rem;
+  outline: none;
+}
+.account-sender-match-mode {
+  width: 74px;
+  padding: 0 0.35rem;
+}
+.account-sender-filter-input {
+  width: 150px;
+  min-width: 110px;
+  padding: 0 0.55rem;
+}
+.account-sender-top-input {
+  width: 56px;
+  padding: 0 0.35rem;
+}
+.account-sender-filter-input:focus,
+.account-sender-match-mode:focus,
+.account-sender-top-input:focus {
+  border-color: var(--clr-primary);
+  box-shadow: 0 0 0 3px rgba(184,92,56,0.15);
+}
+.account-sender-filter-compact .account-sender-filter-input {
+  width: 160px;
+}
+.sender-match-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  margin: 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text);
+}
+.sender-match-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.88rem;
+}
+.sender-match-progress-header strong {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+}
+.sender-match-progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-light);
+}
+.sender-match-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--clr-primary);
+  transition: width 0.25s ease;
+}
+.sender-match-progress-meta,
+.sender-match-current {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.sender-match-progress-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.sender-match-progress-actions .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .toolbar-meta {
   font-size: 0.83rem;

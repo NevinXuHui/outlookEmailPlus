@@ -1099,8 +1099,45 @@
                     searchInput.addEventListener('input', debouncedSearch);
                 }
             });
+            const debouncedSenderFilter = debounce((e) => {
+                if (typeof filterAccountsBySender === 'function') {
+                    filterAccountsBySender(e.target.value);
+                }
+            }, 300);
+            ['accountSenderFilter', 'compactAccountSenderFilter'].forEach((inputId) => {
+                const senderInput = document.getElementById(inputId);
+                if (senderInput) {
+                    senderInput.addEventListener('input', debouncedSenderFilter);
+                }
+            });
+            ['accountSenderMatchMode', 'compactAccountSenderMatchMode'].forEach((selectId) => {
+                const senderMode = document.getElementById(selectId);
+                if (senderMode) {
+                    senderMode.addEventListener('change', (e) => {
+                        if (typeof setAccountSenderMatch === 'function') {
+                            setAccountSenderMatch(e.target.value);
+                        }
+                    });
+                }
+            });
+            ['accountSenderTop', 'compactAccountSenderTop'].forEach((inputId) => {
+                const senderTop = document.getElementById(inputId);
+                if (senderTop) {
+                    senderTop.addEventListener('change', (e) => {
+                        if (typeof setAccountSenderTop === 'function') {
+                            setAccountSenderTop(e.target.value);
+                        }
+                    });
+                }
+            });
             if (typeof updateAccountSearchScopeControls === 'function') {
                 updateAccountSearchScopeControls();
+            }
+            if (typeof syncAccountSenderMatchControls === 'function') {
+                syncAccountSenderMatchControls('has');
+            }
+            if (typeof syncAccountSenderTopControls === 'function') {
+                syncAccountSenderTopControls(20);
             }
 
             // 加载数据概览

@@ -15,6 +15,21 @@ def create_blueprint() -> Blueprint:
         view_func=accounts_controller.api_get_all_account_ids_in_group,
         methods=["GET"],
     )
+    bp.add_url_rule(
+        "/api/accounts/sender-match/start",
+        view_func=accounts_controller.api_start_sender_match_task,
+        methods=["POST"],
+    )
+    bp.add_url_rule(
+        "/api/accounts/sender-match/status/<task_id>",
+        view_func=accounts_controller.api_get_sender_match_task_status,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/api/accounts/sender-match/control/<task_id>",
+        view_func=accounts_controller.api_control_sender_match_task,
+        methods=["POST"],
+    )
     bp.add_url_rule("/api/accounts", view_func=accounts_controller.api_add_account, methods=["POST"])
     bp.add_url_rule(
         "/api/providers",

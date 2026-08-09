@@ -303,6 +303,8 @@ def _build_account_list_where(
     group_id: Optional[int],
     search: str,
     tag_ids: List[int],
+    sender: str = "",
+    sender_match: str = "has",
     show_anomalies: bool = False,
 ) -> Tuple[str, List[Any]]:
     where_clauses: List[str] = []
@@ -329,6 +331,19 @@ def _build_account_list_where(
             )
             """)
         params.extend([like_value, like_value, like_value])
+
+    normalized_sender = str(sender or "").strip().lower()
+    if normalized_sender:
+        sender_like_value = f"%{normalized_sender}%"
+        if str(sender_match or "").strip().lower() == "not_has":
+            where_clauses.append(
+                "LOWER(COALESCE(a.latest_email_from, '')) NOT LIKE ?"
+            )
+        else:
+            where_clauses.append(
+                "LOWER(COALESCE(a.latest_email_from, '')) LIKE ?"
+            )
+        params.append(sender_like_value)
 
     normalized_tag_ids = [int(tag_id) for tag_id in tag_ids if int(tag_id) > 0]
     if normalized_tag_ids:
@@ -393,6 +408,8 @@ def _build_account_list_order(sort_by: str, sort_order: str) -> str:
 def get_all_account_ids_in_group(
     group_id: Optional[int],
     search: str = "",
+    sender: str = "",
+    sender_match: str = "has",
     tag_ids: Optional[List[int]] = None,
     show_anomalies: bool = False,
 ) -> List[int]:
@@ -403,6 +420,8 @@ def get_all_account_ids_in_group(
     where_sql, params = _build_account_list_where(
         group_id=group_id,
         search=search,
+        sender=sender,
+        sender_match=sender_match,
         tag_ids=normalized_tag_ids,
         show_anomalies=show_anomalies,
     )
@@ -426,6 +445,8 @@ def load_accounts_page(
     page: int = 1,
     page_size: int = 50,
     search: str = "",
+    sender: str = "",
+    sender_match: str = "has",
     tag_ids: Optional[List[int]] = None,
     sort_by: str = "refresh_time",
     sort_order: str = "asc",
@@ -440,6 +461,8 @@ def load_accounts_page(
     where_sql, params = _build_account_list_where(
         group_id=group_id,
         search=search,
+        sender=sender,
+        sender_match=sender_match,
         tag_ids=normalized_tag_ids,
         show_anomalies=show_anomalies,
     )
@@ -511,6 +534,39 @@ def get_account_by_id(account_id: int) -> Optional[Dict]:
     _decrypt_account_field(account, "refresh_token")
     _decrypt_account_field(account, "imap_password")
     return account
+
+
+def load_accounts_by_ids(account_ids: Sequence[int]) -> List[Dict[str, Any]]:
+    """按给定 ID 顺序加载账号，供异步筛选结果分页使用。"""
+    normalized_ids: List[int] = []
+    seen_ids = set()
+    for raw_id in account_ids or []:
+        try:
+            account_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if account_id <= 0 or account_id in seen_ids:
+            continue
+        seen_ids.add(account_id)
+        normalized_ids.append(account_id)
+
+    if not normalized_ids:
+        return []
+
+    db = get_db()
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    rows = db.execute(
+        f"""
+        SELECT a.*, g.name as group_name, g.color as group_color
+        FROM accounts a
+        LEFT JOIN groups g ON a.group_id = g.id
+        WHERE a.id IN ({placeholders})
+        """,
+        normalized_ids,
+    ).fetchall()
+
+    accounts_by_id = {int(account["id"]): account for account in _hydrate_accounts(rows, db)}
+    return [accounts_by_id[account_id] for account_id in normalized_ids if account_id in accounts_by_id]
 
 
 def get_preferred_verification_channel(account_id: int) -> Optional[str]:

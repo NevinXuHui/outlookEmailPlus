@@ -3,11 +3,14 @@ from __future__ import annotations
 import html
 import json
 import re
+import threading
+import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
-from flask import Response, g, jsonify, request
+from flask import Response, current_app, g, jsonify, request
 
 from outlook_web import config
 from outlook_web.audit import log_audit
@@ -31,6 +34,11 @@ from outlook_web.security.auth import get_client_ip, get_user_agent, login_requi
 from outlook_web.security.crypto import decrypt_data
 from outlook_web.services import graph as graph_service
 from outlook_web.services import refresh as refresh_service
+
+
+_SENDER_MATCH_TASKS: Dict[str, Dict[str, Any]] = {}
+_SENDER_MATCH_TASK_LOCK = threading.Lock()
+_SENDER_MATCH_TASK_TTL_SECONDS = 30 * 60
 
 
 def sanitize_input(text: str, max_length: int = 500) -> str:
@@ -71,6 +79,255 @@ def _normalize_account_status(status: Any) -> Optional[str]:
     if normalized_status not in {"active", "inactive", "disabled"}:
         return None
     return normalized_status
+
+
+def _normalize_sender_match(value: Any) -> str:
+    """规范化发件人筛选模式：has=有匹配，not_has=无匹配。"""
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return "not_has" if normalized in {"not_has", "without", "missing", "none"} else "has"
+
+
+def _parse_account_filter_tag_ids(data: Dict[str, Any]) -> List[int]:
+    raw_values: List[Any] = []
+    tag_ids_value = data.get("tag_ids")
+    tag_id_value = data.get("tag_id")
+
+    if isinstance(tag_ids_value, list):
+        raw_values.extend(tag_ids_value)
+    elif tag_ids_value is not None:
+        raw_values.extend(str(tag_ids_value or "").split(","))
+
+    if isinstance(tag_id_value, list):
+        raw_values.extend(tag_id_value)
+    elif tag_id_value is not None:
+        raw_values.extend(str(tag_id_value or "").split(","))
+
+    tag_ids: List[int] = []
+    seen_tag_ids = set()
+    for raw_value in raw_values:
+        raw_text = str(raw_value or "").strip()
+        if not raw_text:
+            continue
+        try:
+            tag_id = int(raw_text)
+        except ValueError:
+            continue
+        if tag_id <= 0 or tag_id in seen_tag_ids:
+            continue
+        seen_tag_ids.add(tag_id)
+        tag_ids.append(tag_id)
+    return tag_ids
+
+
+def _safe_account_list_item(account: Dict[str, Any]) -> Dict[str, Any]:
+    client_id = str(account.get("client_id") or "")
+    return {
+        "id": account.get("id"),
+        "email": account.get("email") or "",
+        "account_type": account.get("account_type") or "outlook",
+        "provider": account.get("provider") or "outlook",
+        "client_id": (client_id[:8] + "..." if len(client_id) > 8 else client_id),
+        "group_id": account.get("group_id"),
+        "group_name": account.get("group_name", "默认分组"),
+        "group_color": account.get("group_color", "#666666"),
+        "remark": account.get("remark", ""),
+        "status": account.get("status", "active"),
+        "last_refresh_at": account.get("last_refresh_at", ""),
+        "last_refresh_status": account.get("last_refresh_status"),
+        "last_refresh_error": account.get("last_refresh_error"),
+        "created_at": account.get("created_at", ""),
+        "updated_at": account.get("updated_at", ""),
+        "tags": account.get("tags", []),
+        "telegram_push_enabled": bool(account.get("telegram_push_enabled")),
+        "notification_enabled": bool(account.get("telegram_push_enabled")),
+        "latest_email_subject": account.get("latest_email_subject", ""),
+        "latest_email_from": account.get("latest_email_from", ""),
+        "latest_email_folder": account.get("latest_email_folder", ""),
+        "latest_email_received_at": account.get("latest_email_received_at", ""),
+        "latest_verification_code": account.get("latest_verification_code", ""),
+        "latest_verification_folder": account.get("latest_verification_folder", ""),
+        "latest_verification_received_at": account.get("latest_verification_received_at", ""),
+    }
+
+
+def _extract_message_sender_text(message: Dict[str, Any]) -> str:
+    raw_sender = message.get("from") or message.get("from_address") or message.get("sender") or ""
+    if isinstance(raw_sender, dict):
+        email_address = raw_sender.get("emailAddress") or {}
+        raw_sender = email_address.get("address") or raw_sender.get("address") or raw_sender.get("email") or ""
+    return str(raw_sender or "")
+
+
+def _message_list_has_sender(fetch_result: Dict[str, Any], sender_keyword: str) -> bool:
+    keyword = str(sender_keyword or "").strip().lower()
+    if not keyword:
+        return False
+
+    folders = fetch_result.get("folders") or {}
+    if not isinstance(folders, dict):
+        return False
+
+    for folder_result in folders.values():
+        if not isinstance(folder_result, dict) or not folder_result.get("success"):
+            continue
+        for message in folder_result.get("emails") or []:
+            if keyword in _extract_message_sender_text(message).lower():
+                return True
+    return False
+
+
+def _sender_match_task_snapshot(task: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "task_id": task.get("task_id"),
+        "status": task.get("status"),
+        "group_id": task.get("group_id"),
+        "sender": task.get("sender"),
+        "sender_match": task.get("sender_match"),
+        "total": int(task.get("total") or 0),
+        "current": int(task.get("current") or 0),
+        "matched_count": int(task.get("matched_count") or 0),
+        "failed_count": int(task.get("failed_count") or 0),
+        "current_email": task.get("current_email") or "",
+        "top": int(task.get("top") or 20),
+        "error": task.get("error") or "",
+        "matched_account_ids": list(task.get("matched_account_ids") or []),
+        "updated_at": float(task.get("updated_at") or time.time()),
+    }
+
+
+def _cleanup_sender_match_tasks(now: float) -> None:
+    expired_ids = [
+        task_id
+        for task_id, task in _SENDER_MATCH_TASKS.items()
+        if now - float(task.get("updated_at") or now) > _SENDER_MATCH_TASK_TTL_SECONDS
+    ]
+    for task_id in expired_ids:
+        _SENDER_MATCH_TASKS.pop(task_id, None)
+
+
+def _update_sender_match_task(task_id: str, **updates: Any) -> None:
+    with _SENDER_MATCH_TASK_LOCK:
+        task = _SENDER_MATCH_TASKS.get(task_id)
+        if not task:
+            return
+        task.update(updates)
+        task["updated_at"] = time.time()
+
+
+def _get_sender_match_task_status(task_id: str) -> str:
+    with _SENDER_MATCH_TASK_LOCK:
+        task = _SENDER_MATCH_TASKS.get(task_id)
+        return str((task or {}).get("status") or "")
+
+
+def _wait_sender_match_task_if_paused(task_id: str) -> bool:
+    """任务被暂停时等待继续；返回 True 表示任务已取消/终止。"""
+    while True:
+        status = _get_sender_match_task_status(task_id)
+        if status == "stopped":
+            return True
+        if status != "paused":
+            return False
+        time.sleep(0.2)
+
+
+def _fetch_account_messages_for_sender_match(account_id: int, *, top: int = 20) -> Dict[str, Any]:
+    if bool(current_app.config.get("TESTING")):
+        account = accounts_repo.get_account_by_id(int(account_id)) or {}
+        return {
+            "account_id": int(account_id),
+            "email": account.get("email") or "",
+            "success": True,
+            "folders": {
+                "test": {
+                    "success": True,
+                    "emails": [{"from": account.get("latest_email_from") or ""}],
+                }
+            },
+        }
+
+    from outlook_web.controllers.emails import _fetch_one_account_for_batch
+
+    return _fetch_one_account_for_batch(
+        int(account_id),
+        normalized_folders=["inbox", "junkemail"],
+        skip=0,
+        top=top,
+    )
+
+
+def _run_sender_match_task(app, task_id: str, account_ids: List[int], sender: str, sender_match: str, top: int) -> None:
+    with app.app_context():
+        if _get_sender_match_task_status(task_id) == "queued":
+            _update_sender_match_task(task_id, status="running")
+        matched_ids: List[int] = []
+        failed_count = 0
+
+        for index, account_id in enumerate(account_ids, start=1):
+            if _wait_sender_match_task_if_paused(task_id):
+                _update_sender_match_task(task_id, current_email="")
+                return
+
+            account = accounts_repo.get_account_by_id(int(account_id)) or {}
+            current_email = str(account.get("email") or "")
+            _update_sender_match_task(task_id, current=index, current_email=current_email)
+
+            try:
+                fetch_result = _fetch_account_messages_for_sender_match(int(account_id), top=top)
+                if not fetch_result.get("success"):
+                    failed_count += 1
+                    _update_sender_match_task(task_id, failed_count=failed_count)
+                    continue
+
+                has_sender = _message_list_has_sender(fetch_result, sender)
+                should_include = has_sender if sender_match == "has" else not has_sender
+                if should_include:
+                    matched_ids.append(int(account_id))
+            except Exception as exc:
+                failed_count += 1
+                _update_sender_match_task(task_id, failed_count=failed_count, error=str(exc))
+                continue
+
+            _update_sender_match_task(
+                task_id,
+                matched_account_ids=list(matched_ids),
+                matched_count=len(matched_ids),
+                failed_count=failed_count,
+            )
+
+        _update_sender_match_task(
+            task_id,
+            status="completed",
+            current=len(account_ids),
+            current_email="",
+            matched_account_ids=list(matched_ids),
+            matched_count=len(matched_ids),
+            failed_count=failed_count,
+            finished_at=time.time(),
+        )
+
+
+def _build_sender_match_task_response(task: Dict[str, Any], *, page: int, page_size: int) -> Dict[str, Any]:
+    snapshot = _sender_match_task_snapshot(task)
+    matched_ids = snapshot["matched_account_ids"]
+    total_count = len(matched_ids)
+    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
+    effective_page = min(max(1, page), total_pages) if total_pages > 0 else 1
+    start = (effective_page - 1) * page_size
+    page_ids = matched_ids[start : start + page_size]
+    accounts = [_safe_account_list_item(account) for account in accounts_repo.load_accounts_by_ids(page_ids)]
+
+    return {
+        "success": True,
+        **snapshot,
+        "accounts": accounts,
+        "pagination": {
+            "page": effective_page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+        },
+    }
 
 
 def _build_account_import_failure_response(
@@ -128,6 +385,8 @@ def api_get_accounts() -> Any:
     page = request.args.get("page", default=1, type=int) or 1
     page_size = request.args.get("page_size", default=50, type=int) or 50
     search = (request.args.get("search", type=str) or "").strip()
+    sender = (request.args.get("sender", type=str) or "").strip()
+    sender_match = _normalize_sender_match(request.args.get("sender_match", type=str))
     sort_by = (request.args.get("sort_by", type=str) or "refresh_time").strip().lower()
     sort_order = (request.args.get("sort_order", type=str) or "asc").strip().lower()
     show_anomalies = _parse_bool_flag(request.args.get("show_anomalies"), default=False)
@@ -162,6 +421,8 @@ def api_get_accounts() -> Any:
         page=page,
         page_size=page_size,
         search=search,
+        sender=sender,
+        sender_match=sender_match,
         tag_ids=tag_ids,
         sort_by=sort_by,
         sort_order=sort_order,
@@ -260,6 +521,8 @@ def api_get_all_account_ids_in_group() -> Any:
     """获取组内所有账号ID列表（不受分页限制），用于跨页全选等场景"""
     group_id = request.args.get("group_id", type=int)
     search = (request.args.get("search", type=str) or "").strip()
+    sender = (request.args.get("sender", type=str) or "").strip()
+    sender_match = _normalize_sender_match(request.args.get("sender_match", type=str))
     show_anomalies = _parse_bool_flag(request.args.get("show_anomalies"), default=False)
 
     raw_tag_values = request.args.getlist("tag_id")
@@ -282,6 +545,8 @@ def api_get_all_account_ids_in_group() -> Any:
     account_ids = accounts_repo.get_all_account_ids_in_group(
         group_id=group_id,
         search=search,
+        sender=sender,
+        sender_match=sender_match,
         tag_ids=tag_ids,
         show_anomalies=show_anomalies,
     )
@@ -294,6 +559,193 @@ def api_get_all_account_ids_in_group() -> Any:
             "show_anomalies": show_anomalies,
         }
     )
+
+
+@login_required
+def api_start_sender_match_task() -> Any:
+    """逐个拉取当前分组账号邮件，并按实际邮件发件人匹配账号。"""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        group_id = int(data.get("group_id") or 0)
+    except (TypeError, ValueError):
+        group_id = 0
+    if group_id <= 0:
+        return build_error_response(
+            "GROUP_ID_REQUIRED",
+            "请先选择分组",
+            message_en="Please select a group",
+            status=400,
+        )
+    if not groups_repo.get_group_by_id(group_id):
+        return build_error_response(
+            "GROUP_NOT_FOUND",
+            "分组不存在",
+            message_en="Group not found",
+            status=404,
+        )
+
+    sender = str(data.get("sender") or "").strip()
+    if not sender:
+        return build_error_response(
+            "SENDER_REQUIRED",
+            "请输入发件人关键字",
+            message_en="Sender keyword is required",
+            status=400,
+        )
+
+    sender_match = _normalize_sender_match(data.get("sender_match"))
+    search = str(data.get("search") or "").strip()
+    sort_by = str(data.get("sort_by") or "refresh_time").strip().lower()
+    sort_order = str(data.get("sort_order") or "asc").strip().lower()
+    try:
+        top = int(data.get("top") or 20)
+    except (TypeError, ValueError):
+        top = 20
+    top = max(1, min(top, 100))
+    show_anomalies = _parse_bool_flag(data.get("show_anomalies"), default=False)
+    tag_ids = _parse_account_filter_tag_ids(data)
+    if sort_by not in {"refresh_time", "email"}:
+        sort_by = "refresh_time"
+    if sort_order not in {"asc", "desc"}:
+        sort_order = "asc"
+
+    candidate_ids = accounts_repo.get_all_account_ids_in_group(
+        group_id=group_id,
+        search=search,
+        sender="",
+        sender_match="has",
+        tag_ids=tag_ids,
+        show_anomalies=show_anomalies,
+    )
+    if candidate_ids:
+        candidate_accounts, _, _ = accounts_repo.load_accounts_page(
+            group_id=group_id,
+            page=1,
+            page_size=len(candidate_ids),
+            search=search,
+            sender="",
+            sender_match="has",
+            tag_ids=tag_ids,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            show_anomalies=show_anomalies,
+        )
+        account_ids = [int(account["id"]) for account in candidate_accounts if account.get("id") is not None]
+    else:
+        account_ids = []
+
+    now = time.time()
+    task_id = uuid.uuid4().hex
+    task = {
+        "task_id": task_id,
+        "status": "queued",
+        "group_id": group_id,
+        "sender": sender,
+        "sender_match": sender_match,
+        "search": search,
+        "tag_ids": tag_ids,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+        "top": top,
+        "show_anomalies": show_anomalies,
+        "total": len(account_ids),
+        "current": 0,
+        "matched_count": 0,
+        "failed_count": 0,
+        "current_email": "",
+        "matched_account_ids": [],
+        "error": "",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    with _SENDER_MATCH_TASK_LOCK:
+        _cleanup_sender_match_tasks(now)
+        _SENDER_MATCH_TASKS[task_id] = task
+
+    app = current_app._get_current_object()
+    worker = threading.Thread(
+        target=_run_sender_match_task,
+        args=(app, task_id, account_ids, sender, sender_match, top),
+        daemon=True,
+    )
+    worker.start()
+
+    log_audit(
+        "sender_match",
+        "account",
+        None,
+        f"启动发件人邮件匹配：group_id={group_id} total={len(account_ids)} sender={sender} mode={sender_match} top={top}",
+    )
+
+    return jsonify(_build_sender_match_task_response(task, page=1, page_size=50))
+
+
+@login_required
+def api_get_sender_match_task_status(task_id: str) -> Any:
+    """查询逐账号发件人邮件匹配进度与分页结果。"""
+    page = request.args.get("page", default=1, type=int) or 1
+    page_size = request.args.get("page_size", default=50, type=int) or 50
+    if page < 1:
+        page = 1
+    page_size = max(1, min(page_size, 100))
+
+    with _SENDER_MATCH_TASK_LOCK:
+        task = _SENDER_MATCH_TASKS.get(str(task_id or ""))
+        if not task:
+            return build_error_response(
+                "TASK_NOT_FOUND",
+                "匹配任务不存在或已过期",
+                message_en="Match task not found or expired",
+                status=404,
+            )
+        snapshot = _sender_match_task_snapshot(task)
+
+    return jsonify(_build_sender_match_task_response(snapshot, page=page, page_size=page_size))
+
+
+@login_required
+def api_control_sender_match_task(task_id: str) -> Any:
+    """控制逐账号发件人匹配任务：暂停/继续/停止。"""
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action") or "").strip().lower()
+
+    with _SENDER_MATCH_TASK_LOCK:
+        task = _SENDER_MATCH_TASKS.get(str(task_id or ""))
+        if not task:
+            return build_error_response(
+                "TASK_NOT_FOUND",
+                "匹配任务不存在或已过期",
+                message_en="Match task not found or expired",
+                status=404,
+            )
+
+        status = str(task.get("status") or "")
+        if action == "pause":
+            if status not in {"completed", "stopped"}:
+                task["status"] = "paused"
+                task["updated_at"] = time.time()
+        elif action in {"resume", "continue"}:
+            if status == "paused":
+                task["status"] = "running"
+                task["updated_at"] = time.time()
+        elif action in {"stop", "cancel", "abort"}:
+            if status != "completed":
+                task["status"] = "stopped"
+                task["current_email"] = ""
+                task["updated_at"] = time.time()
+        else:
+            return build_error_response(
+                "INVALID_PARAM",
+                "action 必须为 pause / continue / stop",
+                message_en="action must be pause, continue or stop",
+                status=400,
+            )
+
+        snapshot = _sender_match_task_snapshot(task)
+
+    return jsonify(_build_sender_match_task_response(snapshot, page=1, page_size=50))
 
 
 @login_required

@@ -225,7 +225,7 @@
             const container = document.getElementById('compactAccountList');
             if (!container) return;
             const globalSearch = typeof isGlobalAccountSearchActive === 'function' && isGlobalAccountSearchActive();
-            const searchActive = typeof hasAccountSearchQuery === 'function' && hasAccountSearchQuery();
+            const searchActive = typeof hasAccountListTextFilter === 'function' && hasAccountListTextFilter();
             const pagination = typeof getAccountListMeta === 'function' ? getAccountListMeta() : {
                 page: 1,
                 total_pages: 0,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import time
 import uuid
+from unittest import mock
 
 from tests._import_app import clear_login_attempts, import_web_app_module
 
@@ -49,6 +51,7 @@ class Issue56AccountsPaginationTests(unittest.TestCase):
         email_addr: str,
         remark: str = "",
         last_refresh_at: str = "",
+        latest_email_from: str = "",
     ) -> int:
         unique = uuid.uuid4().hex
         conn = self._db()
@@ -56,11 +59,21 @@ class Issue56AccountsPaginationTests(unittest.TestCase):
             cur = conn.execute(
                 """
                 INSERT INTO accounts (
-                    email, password, client_id, refresh_token, group_id, remark, status, last_refresh_at
+                    email, password, client_id, refresh_token, group_id, remark, status, last_refresh_at,
+                    latest_email_from
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
                 """,
-                (email_addr, "", f"cid_{unique}", f"rt_{unique}", group_id, remark, last_refresh_at),
+                (
+                    email_addr,
+                    "",
+                    f"cid_{unique}",
+                    f"rt_{unique}",
+                    group_id,
+                    remark,
+                    last_refresh_at,
+                    latest_email_from,
+                ),
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -163,6 +176,213 @@ class Issue56AccountsPaginationTests(unittest.TestCase):
         ids_data = ids_resp.get_json() or {}
         self.assertEqual(ids_data.get("success"), True)
         self.assertGreaterEqual(int(ids_data.get("total_count") or 0), 2)
+
+    def test_accounts_api_sender_filter_supports_has_and_not_has_with_group_scope(self):
+        client = self.app.test_client()
+        self._login(client)
+        group_a = self._create_group(name="issue56_sender_a")
+        group_b = self._create_group(name="issue56_sender_b")
+
+        matched_email = f"sender_match_{uuid.uuid4().hex}@example.com"
+        unmatched_email = f"sender_unmatched_{uuid.uuid4().hex}@example.com"
+        other_group_email = f"sender_other_{uuid.uuid4().hex}@example.com"
+        self._create_account(group_id=group_a, email_addr=matched_email, latest_email_from="alerts@example.com")
+        self._create_account(group_id=group_a, email_addr=unmatched_email, latest_email_from="billing@example.com")
+        self._create_account(group_id=group_b, email_addr=other_group_email, latest_email_from="alerts@example.com")
+
+        resp = client.get(f"/api/accounts?group_id={group_a}&sender=alerts&page=1&page_size=50")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json() or {}
+        self.assertEqual(data.get("success"), True)
+        accounts = data.get("accounts") or []
+        self.assertEqual([account.get("email") for account in accounts], [matched_email])
+        self.assertEqual((data.get("pagination") or {}).get("total_count"), 1)
+
+        not_has_resp = client.get(
+            f"/api/accounts?group_id={group_a}&sender=alerts&sender_match=not_has&page=1&page_size=50"
+        )
+        self.assertEqual(not_has_resp.status_code, 200)
+        not_has_data = not_has_resp.get_json() or {}
+        self.assertEqual(not_has_data.get("success"), True)
+        not_has_accounts = not_has_data.get("accounts") or []
+        self.assertEqual([account.get("email") for account in not_has_accounts], [unmatched_email])
+
+        ids_resp = client.get(f"/api/accounts/all-ids?group_id={group_a}&sender=alerts")
+        self.assertEqual(ids_resp.status_code, 200)
+        ids_data = ids_resp.get_json() or {}
+        self.assertEqual(ids_data.get("success"), True)
+        self.assertEqual(int(ids_data.get("total_count") or 0), 1)
+
+    def test_sender_match_task_fetches_group_accounts_and_reports_progress(self):
+        client = self.app.test_client()
+        self._login(client)
+        group_a = self._create_group(name="issue56_sender_task_a")
+        group_b = self._create_group(name="issue56_sender_task_b")
+
+        matched_id = self._create_account(
+            group_id=group_a,
+            email_addr=f"sender_task_match_{uuid.uuid4().hex}@example.com",
+            latest_email_from="alerts@example.com",
+        )
+        unmatched_id = self._create_account(
+            group_id=group_a,
+            email_addr=f"sender_task_unmatched_{uuid.uuid4().hex}@example.com",
+            latest_email_from="billing@example.com",
+        )
+        other_group_id = self._create_account(
+            group_id=group_b,
+            email_addr=f"sender_task_other_{uuid.uuid4().hex}@example.com",
+            latest_email_from="alerts@example.com",
+        )
+
+        from outlook_web.controllers import accounts as accounts_controller
+
+        seen_tops = []
+
+        def fake_fetch(account_id: int, *, top: int = 20):
+            seen_tops.append(top)
+            account = accounts_controller.accounts_repo.get_account_by_id(int(account_id)) or {}
+            return {
+                "account_id": int(account_id),
+                "email": account.get("email") or "",
+                "success": True,
+                "folders": {"test": {"success": True, "emails": [{"from": account.get("latest_email_from") or ""}]}},
+            }
+
+        with mock.patch.object(accounts_controller, "_fetch_account_messages_for_sender_match", side_effect=fake_fetch):
+            resp = client.post(
+                "/api/accounts/sender-match/start",
+                json={"group_id": group_a, "sender": "alerts", "sender_match": "has", "top": 3},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json() or {}
+            self.assertEqual(data.get("success"), True)
+            self.assertEqual(data.get("total"), 2)
+            self.assertEqual(data.get("top"), 3)
+            task_id = data.get("task_id")
+            self.assertTrue(task_id)
+
+            final_data = data
+            for _ in range(30):
+                status_resp = client.get(f"/api/accounts/sender-match/status/{task_id}?page=1&page_size=50")
+                self.assertEqual(status_resp.status_code, 200)
+                final_data = status_resp.get_json() or {}
+                if final_data.get("status") == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(final_data.get("status"), "completed")
+        self.assertEqual(final_data.get("total"), 2)
+        self.assertEqual(final_data.get("top"), 3)
+        self.assertEqual(final_data.get("matched_count"), 1)
+        self.assertEqual(final_data.get("failed_count"), 0)
+        self.assertEqual(set(final_data.get("matched_account_ids") or []), {matched_id})
+        self.assertNotIn(unmatched_id, final_data.get("matched_account_ids") or [])
+        self.assertNotIn(other_group_id, final_data.get("matched_account_ids") or [])
+        self.assertEqual(seen_tops, [3, 3])
+        accounts = final_data.get("accounts") or []
+        self.assertEqual([account.get("id") for account in accounts], [matched_id])
+        self.assertEqual((final_data.get("pagination") or {}).get("total_count"), 1)
+
+    def test_sender_match_task_can_stop_and_continue(self):
+        client = self.app.test_client()
+        self._login(client)
+        group_id = self._create_group(name="issue56_sender_task_control")
+        matched_ids = [
+            self._create_account(
+                group_id=group_id,
+                email_addr=f"sender_task_control_{index}_{uuid.uuid4().hex}@example.com",
+                latest_email_from="alerts@example.com",
+            )
+            for index in range(5)
+        ]
+
+        from outlook_web.controllers import accounts as accounts_controller
+
+        def slow_fetch(account_id: int, *, top: int = 20):
+            time.sleep(0.05)
+            account = accounts_controller.accounts_repo.get_account_by_id(int(account_id)) or {}
+            return {
+                "account_id": int(account_id),
+                "email": account.get("email") or "",
+                "success": True,
+                "folders": {"test": {"success": True, "emails": [{"from": account.get("latest_email_from") or ""}]}},
+            }
+
+        with mock.patch.object(accounts_controller, "_fetch_account_messages_for_sender_match", side_effect=slow_fetch):
+            resp = client.post(
+                "/api/accounts/sender-match/start",
+                json={"group_id": group_id, "sender": "alerts", "sender_match": "has"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            task_id = (resp.get_json() or {}).get("task_id")
+            self.assertTrue(task_id)
+
+            pause_resp = client.post(f"/api/accounts/sender-match/control/{task_id}", json={"action": "pause"})
+            self.assertEqual(pause_resp.status_code, 200)
+            pause_data = pause_resp.get_json() or {}
+            self.assertEqual(pause_data.get("status"), "paused")
+
+            time.sleep(0.12)
+            paused_resp = client.get(f"/api/accounts/sender-match/status/{task_id}?page=1&page_size=50")
+            self.assertEqual(paused_resp.status_code, 200)
+            paused_data = paused_resp.get_json() or {}
+            self.assertEqual(paused_data.get("status"), "paused")
+
+            continue_resp = client.post(f"/api/accounts/sender-match/control/{task_id}", json={"action": "continue"})
+            self.assertEqual(continue_resp.status_code, 200)
+            continue_data = continue_resp.get_json() or {}
+            self.assertEqual(continue_data.get("status"), "running")
+
+            final_data = continue_data
+            for _ in range(40):
+                status_resp = client.get(f"/api/accounts/sender-match/status/{task_id}?page=1&page_size=50")
+                self.assertEqual(status_resp.status_code, 200)
+                final_data = status_resp.get_json() or {}
+                if final_data.get("status") == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(final_data.get("status"), "completed")
+        self.assertEqual(final_data.get("matched_count"), len(matched_ids))
+        self.assertEqual(set(final_data.get("matched_account_ids") or []), set(matched_ids))
+
+    def test_sender_match_task_stop_ends_task(self):
+        client = self.app.test_client()
+        self._login(client)
+        group_id = self._create_group(name="issue56_sender_task_stop")
+        for index in range(3):
+            self._create_account(
+                group_id=group_id,
+                email_addr=f"sender_task_stop_{index}_{uuid.uuid4().hex}@example.com",
+                latest_email_from="alerts@example.com",
+            )
+
+        from outlook_web.controllers import accounts as accounts_controller
+
+        def slow_fetch(account_id: int, *, top: int = 20):
+            time.sleep(0.1)
+            account = accounts_controller.accounts_repo.get_account_by_id(int(account_id)) or {}
+            return {
+                "account_id": int(account_id),
+                "email": account.get("email") or "",
+                "success": True,
+                "folders": {"test": {"success": True, "emails": [{"from": account.get("latest_email_from") or ""}]}},
+            }
+
+        with mock.patch.object(accounts_controller, "_fetch_account_messages_for_sender_match", side_effect=slow_fetch):
+            resp = client.post(
+                "/api/accounts/sender-match/start",
+                json={"group_id": group_id, "sender": "alerts", "sender_match": "has"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            task_id = (resp.get_json() or {}).get("task_id")
+            self.assertTrue(task_id)
+
+            stop_resp = client.post(f"/api/accounts/sender-match/control/{task_id}", json={"action": "stop"})
+            self.assertEqual(stop_resp.status_code, 200)
+            stop_data = stop_resp.get_json() or {}
+            self.assertEqual(stop_data.get("status"), "stopped")
 
     def test_accounts_api_supports_tag_filter_and_email_sort(self):
         client = self.app.test_client()

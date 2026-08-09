@@ -94,9 +94,15 @@
             currentGroupId = groupId;
             currentAccountPage = 1;  // 切换分组时重置到第 1 页
             currentAccountSearchQuery = '';
+            currentAccountSenderQuery = '';
+            currentAccountSenderMatch = 'has';
+            currentAccountSenderTop = 20;
             showAnomaliesOnly = false;  // 切换分组时重置异常筛选
             if (typeof clearGlobalAccountListCache === 'function') {
                 clearGlobalAccountListCache();
+            }
+            if (typeof resetAccountSenderMatchTask === 'function') {
+                resetAccountSenderMatchTask();
             }
 
             // 切换分组时停止所有正在运行的轮询（避免跨分组轮询堆积）
@@ -112,6 +118,15 @@
                 if (searchInput) searchInput.value = '';
                 const compactSearchInput = document.getElementById('compactGlobalSearch');
                 if (compactSearchInput) compactSearchInput.value = '';
+            }
+            if (typeof syncAccountSenderFilterInputs === 'function') {
+                syncAccountSenderFilterInputs('');
+            }
+            if (typeof syncAccountSenderMatchControls === 'function') {
+                syncAccountSenderMatchControls('has');
+            }
+            if (typeof syncAccountSenderTopControls === 'function') {
+                syncAccountSenderTopControls(20);
             }
 
             // 重置异常筛选复选框（标准模式 + 简洁模式）
@@ -175,11 +190,11 @@
             // No-op: new layout uses topbar action buttons instead
         }
 
-        // 加载账号列表：全局搜索时跨全部分组；否则按当前分组
+        // 加载账号列表：全局邮箱搜索跨全部分组；当前分组搜索/发件人筛选/浏览按当前分组
         async function loadAccountsByGroup(groupId, forceRefresh = false, page = currentAccountPage) {
             const container = document.getElementById('accountList');
             const cacheKey = resolveAccountListCacheKey(groupId);
-            // 全局搜索时不传 group_id；分组搜索/浏览时使用指定分组
+            // 全局邮箱搜索时不传 group_id；当前分组搜索/发件人筛选/浏览时使用指定分组
             const queryGroupId = isGlobalAccountSearchActive() ? null : groupId;
 
             // 保存当前滚动位置（forceRefresh 时恢复）
@@ -263,7 +278,7 @@
         function renderAccountList(accounts) {
             const container = document.getElementById('accountList');
             const globalSearch = isGlobalAccountSearchActive();
-            const searchActive = hasAccountSearchQuery();
+            const searchActive = hasAccountListTextFilter();
 
             if (!accounts || accounts.length === 0) {
                 const emptyText = searchActive
@@ -494,14 +509,26 @@
         }
 
         // 跳转到指定账号分页（支持全局搜索结果分页）
-        function goToAccountPage(page) {
+        async function goToAccountPage(page) {
             if (!isGlobalAccountSearchActive() && (currentGroupId === null || currentGroupId === undefined)) {
                 return;
             }
             const totalPages = Number(getAccountListMeta().total_pages || 0);
             if (page < 1 || page > totalPages) return;
             currentAccountPage = page;
-            loadAccountsByGroup(currentGroupId, false, page);
+
+            if (isAccountSenderMatchResultActive()) {
+                try {
+                    await loadAccountSenderMatchResultPage(page);
+                } catch (error) {
+                    console.error('发件人邮件匹配分页失败:', error);
+                    showToast(translateAppTextLocal('邮件匹配分页失败'), 'error');
+                    return;
+                }
+            } else {
+                loadAccountsByGroup(currentGroupId, false, page);
+            }
+
             const containers = [
                 document.getElementById('accountList'),
                 document.getElementById('compactAccountList')
@@ -532,12 +559,20 @@
         let currentAccountPage = 1;
         const ACCOUNT_PAGE_SIZE = 50;
         let currentAccountSearchQuery = '';
+        let currentAccountSenderQuery = '';
+        let currentAccountSenderMatch = 'has';
+        let currentAccountSenderTop = 20;
+        let accountSenderMatchTaskId = '';
+        let accountSenderMatchTaskStatus = 'idle';
+        let accountSenderMatchPollTimer = null;
+        let accountSenderMatchMatchedIds = [];
+        let accountSenderMatchCompletionNotified = false;
         const ACCOUNT_SEARCH_SCOPE_GROUP = 'group';
         const ACCOUNT_SEARCH_SCOPE_GLOBAL = 'global';
-        // 默认保留原有全局搜索行为；用户可显式切换为当前分组搜索。
+        // 邮箱关键词搜索默认跨全部分组；用户可切换为当前分组搜索。
         let currentAccountSearchScope = ACCOUNT_SEARCH_SCOPE_GLOBAL;
         const accountListMetaCache = {};
-        // 全局搜索结果使用独立缓存键，避免污染分组缓存
+        // 邮箱关键词全局搜索结果使用独立缓存键，避免污染分组缓存
         const GLOBAL_ACCOUNT_LIST_KEY = '__global__';
 
         // 异常筛选状态
@@ -547,8 +582,18 @@
             return Boolean(String(currentAccountSearchQuery || '').trim());
         }
 
+        function hasAccountSenderFilter() {
+            return Boolean(String(currentAccountSenderQuery || '').trim());
+        }
+
+        function hasAccountListTextFilter() {
+            return hasAccountSearchQuery() || hasAccountSenderFilter();
+        }
+
         function isGlobalAccountSearchActive() {
-            return currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GLOBAL && hasAccountSearchQuery();
+            return currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GLOBAL
+                && hasAccountSearchQuery()
+                && !hasAccountSenderFilter();
         }
 
         function normalizeAccountSearchScope(scope) {
@@ -558,6 +603,10 @@
         }
 
         function updateAccountSearchScopeControls() {
+            const senderFilterActive = hasAccountSenderFilter();
+            const effectiveScope = senderFilterActive
+                ? ACCOUNT_SEARCH_SCOPE_GROUP
+                : currentAccountSearchScope;
             const controls = [
                 { id: 'accountSearchScopeGroup', scope: ACCOUNT_SEARCH_SCOPE_GROUP },
                 { id: 'accountSearchScopeGlobal', scope: ACCOUNT_SEARCH_SCOPE_GLOBAL },
@@ -567,12 +616,17 @@
             controls.forEach(({ id, scope }) => {
                 const button = document.getElementById(id);
                 if (!button) return;
-                const active = currentAccountSearchScope === scope;
+                const active = effectiveScope === scope;
                 button.classList.toggle('active', active);
+                button.disabled = senderFilterActive && scope === ACCOUNT_SEARCH_SCOPE_GLOBAL;
                 button.setAttribute('aria-pressed', active ? 'true' : 'false');
+                const titleKey = senderFilterActive && scope === ACCOUNT_SEARCH_SCOPE_GLOBAL
+                    ? '发件人筛选固定当前分组'
+                    : (scope === ACCOUNT_SEARCH_SCOPE_GROUP ? '仅在当前分组搜索邮箱' : '跨全部分组搜索邮箱');
+                button.title = translateAppTextLocal(titleKey);
             });
 
-            const groupScope = currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GROUP;
+            const groupScope = effectiveScope === ACCOUNT_SEARCH_SCOPE_GROUP;
             const placeholder = translateAppTextLocal(groupScope ? '搜索当前分组邮箱…' : '全局搜索邮箱…');
             const title = translateAppTextLocal(groupScope ? '仅在当前分组搜索邮箱' : '跨全部分组搜索邮箱');
             ['globalSearch', 'compactGlobalSearch'].forEach((inputId) => {
@@ -583,7 +637,7 @@
             });
         }
 
-        function setAccountSearchScope(scope, options = {}) {
+        async function setAccountSearchScope(scope, options = {}) {
             const nextScope = normalizeAccountSearchScope(scope);
             const changed = currentAccountSearchScope !== nextScope;
             currentAccountSearchScope = nextScope;
@@ -592,29 +646,11 @@
             updateAccountListHeaderForSearch();
 
             const shouldReload = options.reload !== false;
-            if (!shouldReload || !changed || !hasAccountSearchQuery()) {
+            if (!shouldReload || !changed || !hasAccountListTextFilter()) {
                 return;
             }
 
-            currentAccountPage = 1;
-            if (currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GROUP
-                && (currentGroupId === null || currentGroupId === undefined)) {
-                const container = document.getElementById('accountList');
-                if (container) {
-                    container.innerHTML = `
-                        <div class="empty-state">
-                            <span class="empty-icon">📁</span>
-                            <p>${translateAppTextLocal('请从左侧选择一个分组')}</p>
-                        </div>
-                    `;
-                }
-                if (typeof renderCompactErrorState === 'function') {
-                    renderCompactErrorState(translateAppTextLocal('请选择分组'));
-                }
-                return;
-            }
-
-            loadAccountsByGroup(currentGroupId, true, 1);
+            await reloadAccountListForFilters();
         }
 
         function syncGlobalSearchInputs(value) {
@@ -628,6 +664,128 @@
             updateAccountSearchScopeControls();
         }
 
+        function syncAccountSenderFilterInputs(value) {
+            const nextValue = String(value || '');
+            ['accountSenderFilter', 'compactAccountSenderFilter'].forEach((inputId) => {
+                const input = document.getElementById(inputId);
+                if (input && input.value !== nextValue) {
+                    input.value = nextValue;
+                }
+            });
+        }
+
+        function syncAccountSenderMatchControls(value) {
+            const nextValue = value === 'not_has' ? 'not_has' : 'has';
+            ['accountSenderMatchMode', 'compactAccountSenderMatchMode'].forEach((selectId) => {
+                const select = document.getElementById(selectId);
+                if (select && select.value !== nextValue) {
+                    select.value = nextValue;
+                }
+            });
+        }
+
+        function normalizeAccountSenderTop(value) {
+            const parsed = parseInt(value, 10);
+            if (Number.isNaN(parsed)) return 20;
+            return Math.max(1, Math.min(parsed, 100));
+        }
+
+        function syncAccountSenderTopControls(value) {
+            const nextValue = normalizeAccountSenderTop(value);
+            ['accountSenderTop', 'compactAccountSenderTop'].forEach((inputId) => {
+                const input = document.getElementById(inputId);
+                if (input && String(input.value) !== String(nextValue)) {
+                    input.value = String(nextValue);
+                }
+            });
+        }
+
+        function showSelectGroupForAccountFilter() {
+            updateAccountListHeaderForSearch();
+            const container = document.getElementById('accountList');
+            if (container) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <span class="empty-icon">📁</span>
+                        <p>${translateAppTextLocal('请从左侧选择一个分组')}</p>
+                    </div>
+                `;
+            }
+            if (typeof renderCompactErrorState === 'function') {
+                renderCompactErrorState(translateAppTextLocal('请选择分组'));
+            }
+        }
+
+        async function reloadAccountListForFilters() {
+            currentAccountPage = 1;
+            if (!hasAccountListTextFilter()) {
+                resetAccountSenderMatchTask();
+                clearGlobalAccountListCache();
+                updateAccountListHeaderForSearch();
+                if (currentGroupId) {
+                    await loadAccountsByGroup(currentGroupId, true, 1);
+                } else {
+                    const container = document.getElementById('accountList');
+                    if (container) {
+                        container.innerHTML = `
+                            <div class="empty-state">
+                                <span class="empty-icon">📁</span>
+                                <p>${translateAppTextLocal('请从左侧选择一个分组')}</p>
+                            </div>
+                        `;
+                    }
+                    if (typeof renderCompactErrorState === 'function') {
+                        renderCompactErrorState(translateAppTextLocal('请选择分组'));
+                    }
+                }
+                return;
+            }
+
+            if (hasAccountSenderFilter()) {
+                if (currentGroupId === null || currentGroupId === undefined) {
+                    showSelectGroupForAccountFilter();
+                    return;
+                }
+                updateAccountListHeaderForSearch();
+                await startAccountSenderMatchTask();
+                return;
+            }
+
+            resetAccountSenderMatchTask();
+            if (!isGlobalAccountSearchActive() && (currentGroupId === null || currentGroupId === undefined)) {
+                showSelectGroupForAccountFilter();
+                return;
+            }
+
+            clearGlobalAccountListCache();
+            updateAccountListHeaderForSearch();
+            await loadAccountsByGroup(currentGroupId, true, 1);
+        }
+
+        async function filterAccountsBySender(query) {
+            currentAccountSenderQuery = String(query || '').trim();
+            syncAccountSenderFilterInputs(currentAccountSenderQuery);
+            updateAccountSearchScopeControls();
+            await reloadAccountListForFilters();
+        }
+
+        async function setAccountSenderMatch(value) {
+            currentAccountSenderMatch = value === 'not_has' ? 'not_has' : 'has';
+            syncAccountSenderMatchControls(currentAccountSenderMatch);
+            updateAccountSearchScopeControls();
+            if (hasAccountSenderFilter()) {
+                await reloadAccountListForFilters();
+            }
+        }
+
+        async function setAccountSenderTop(value) {
+            currentAccountSenderTop = normalizeAccountSenderTop(value);
+            syncAccountSenderTopControls(currentAccountSenderTop);
+            if (hasAccountSenderFilter()) {
+                await reloadAccountListForFilters();
+            }
+        }
+
         function resolveAccountListCacheKey(groupId = currentGroupId) {
             return isGlobalAccountSearchActive() ? GLOBAL_ACCOUNT_LIST_KEY : groupId;
         }
@@ -635,6 +793,286 @@
         function clearGlobalAccountListCache() {
             delete accountsCache[GLOBAL_ACCOUNT_LIST_KEY];
             delete accountListMetaCache[GLOBAL_ACCOUNT_LIST_KEY];
+        }
+
+        function resetAccountSenderMatchTask() {
+            if (accountSenderMatchPollTimer) {
+                clearTimeout(accountSenderMatchPollTimer);
+                accountSenderMatchPollTimer = null;
+            }
+            accountSenderMatchTaskId = '';
+            accountSenderMatchTaskStatus = 'idle';
+            accountSenderMatchMatchedIds = [];
+            accountSenderMatchCompletionNotified = false;
+        }
+
+        function isAccountSenderMatchResultActive() {
+            return Boolean(accountSenderMatchTaskId)
+                && ['queued', 'running', 'paused', 'completed', 'stopped'].includes(accountSenderMatchTaskStatus)
+                && hasAccountSenderFilter();
+        }
+
+        function buildAccountSenderMatchTaskPayload() {
+            return {
+                group_id: currentGroupId,
+                sender: String(currentAccountSenderQuery || '').trim(),
+                sender_match: currentAccountSenderMatch === 'not_has' ? 'not_has' : 'has',
+                top: normalizeAccountSenderTop(currentAccountSenderTop),
+                search: String(currentAccountSearchQuery || '').trim(),
+                sort_by: currentSortBy,
+                sort_order: currentSortOrder,
+                tag_ids: getSelectedTagFilterIds(),
+                show_anomalies: Boolean(showAnomaliesOnly)
+            };
+        }
+
+        function getAccountSenderMatchStatusLabel(status) {
+            if (status === 'paused') return translateAppTextLocal('已暂停，等待继续');
+            if (status === 'completed') return translateAppTextLocal('邮件匹配完成');
+            if (status === 'stopped') return translateAppTextLocal('邮件匹配已停止');
+            return translateAppTextLocal('正在逐个拉取邮件匹配…');
+        }
+
+        function buildAccountSenderMatchProgressHtml(task = {}) {
+            const total = Number(task.total || 0);
+            const current = Math.min(Number(task.current || 0), total);
+            const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+            const matched = Number(task.matched_count || 0);
+            const failed = Number(task.failed_count || 0);
+            const currentEmail = String(task.current_email || '').trim();
+            const status = String(task.status || accountSenderMatchTaskStatus || 'running');
+            const statusText = getAccountSenderMatchStatusLabel(status);
+            const progressText = `${current} / ${total}`;
+            const detailText = [
+                `${translateAppTextLocal('匹配')} ${matched}`,
+                `${translateAppTextLocal('失败')} ${failed}`,
+                `${translateAppTextLocal('最新')} ${normalizeAccountSenderTop(task.top || currentAccountSenderTop)} ${translateAppTextLocal('封')}`
+            ].join(' · ');
+            const currentText = currentEmail
+                ? `<div class="sender-match-current">${escapeHtml(translateAppTextLocal('当前账号'))}: ${escapeHtml(currentEmail)}</div>`
+                : '';
+            const canPause = status === 'queued' || status === 'running';
+            const canContinue = status === 'paused';
+            const canStop = status === 'queued' || status === 'running' || status === 'paused';
+            return `
+                <div class="sender-match-progress">
+                    <div class="sender-match-progress-header">
+                        ${status === 'running' || status === 'queued' ? '<span class="spinner"></span>' : ''}
+                        <strong>${escapeHtml(statusText)}</strong>
+                        <span>${escapeHtml(progressText)}</span>
+                    </div>
+                    <div class="sender-match-progress-bar">
+                        <span style="width:${percent}%"></span>
+                    </div>
+                    <div class="sender-match-progress-meta">${escapeHtml(detailText)}</div>
+                    ${currentText}
+                    <div class="sender-match-progress-actions">
+                        <button type="button" class="btn btn-sm" onclick="controlAccountSenderMatchTask('pause')" ${canPause ? '' : 'disabled'}>${escapeHtml(translateAppTextLocal('暂停'))}</button>
+                        <button type="button" class="btn btn-sm btn-accent" onclick="controlAccountSenderMatchTask('continue')" ${canContinue ? '' : 'disabled'}>${escapeHtml(translateAppTextLocal('继续'))}</button>
+                        <button type="button" class="btn btn-sm btn-danger" onclick="controlAccountSenderMatchTask('stop')" ${canStop ? '' : 'disabled'}>${escapeHtml(translateAppTextLocal('停止'))}</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function prependAccountSenderMatchProgress(task = {}) {
+            const html = buildAccountSenderMatchProgressHtml(task);
+            const container = document.getElementById('accountList');
+            if (container) {
+                const oldProgress = container.querySelector('.sender-match-progress');
+                if (oldProgress) oldProgress.remove();
+                container.insertAdjacentHTML('afterbegin', html);
+            }
+            const compactContainer = document.getElementById('compactAccountList');
+            if (compactContainer) {
+                const oldCompactProgress = compactContainer.querySelector('.sender-match-progress');
+                if (oldCompactProgress) oldCompactProgress.remove();
+                compactContainer.insertAdjacentHTML('afterbegin', html);
+            }
+        }
+
+        function renderAccountSenderMatchProgress(task = {}) {
+            const html = buildAccountSenderMatchProgressHtml(task);
+            const container = document.getElementById('accountList');
+            if (container) {
+                container.innerHTML = html;
+            }
+            if (typeof renderCompactLoadingState === 'function') {
+                const statusText = getAccountSenderMatchStatusLabel(String(task.status || accountSenderMatchTaskStatus || 'running'));
+                const total = Number(task.total || 0);
+                const current = Math.min(Number(task.current || 0), total);
+                renderCompactLoadingState(`${statusText} ${current} / ${total}`);
+            }
+        }
+
+        function renderAccountSenderMatchSnapshot(data, { notifyCompleted = false } = {}) {
+            accountSenderMatchTaskStatus = data.status || 'running';
+            accountSenderMatchMatchedIds = Array.isArray(data.matched_account_ids)
+                ? data.matched_account_ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+                : [];
+
+            const queryKey = `sender-match:${accountSenderMatchTaskId}:page=${Number((data.pagination || {}).page || 1)}`;
+            updateAccountListCache(currentGroupId, data.accounts || [], data.pagination || {}, queryKey);
+            const cacheKey = resolveAccountListCacheKey(currentGroupId);
+            renderAccountList(accountsCache[cacheKey] || []);
+            if (typeof renderCompactAccountList === 'function') {
+                renderCompactAccountList(accountsCache[cacheKey] || []);
+            }
+            prependAccountSenderMatchProgress(data);
+            updateAccountListHeaderForSearch();
+
+            if (notifyCompleted && !accountSenderMatchCompletionNotified) {
+                accountSenderMatchCompletionNotified = true;
+                showToast(translateAppTextLocal('邮件匹配完成'));
+            }
+        }
+
+        function applyAccountSenderMatchResult(data) {
+            renderAccountSenderMatchSnapshot(data, { notifyCompleted: true });
+        }
+
+        async function loadAccountSenderMatchResultPage(page = currentAccountPage) {
+            if (!accountSenderMatchTaskId) return;
+            const taskId = accountSenderMatchTaskId;
+            const targetPage = Math.max(1, Number(page || 1));
+            const response = await fetch(`/api/accounts/sender-match/status/${taskId}?page=${targetPage}&page_size=${ACCOUNT_PAGE_SIZE}`);
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.message || data.error || 'sender match status failed');
+            }
+            if (taskId !== accountSenderMatchTaskId) {
+                return;
+            }
+            currentAccountPage = Number((data.pagination || {}).page || targetPage);
+            if (data.status === 'completed') {
+                applyAccountSenderMatchResult(data);
+            } else if (data.status === 'failed') {
+                showToast(translateAppTextLocal('邮件匹配失败'), 'error');
+            } else {
+                renderAccountSenderMatchSnapshot(data);
+            }
+        }
+
+        async function pollAccountSenderMatchTaskStatus() {
+            if (!accountSenderMatchTaskId || !hasAccountSenderFilter()) {
+                return;
+            }
+            const taskId = accountSenderMatchTaskId;
+
+            try {
+                const response = await fetch(`/api/accounts/sender-match/status/${taskId}?page=${currentAccountPage || 1}&page_size=${ACCOUNT_PAGE_SIZE}`);
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.message || data.error || 'sender match status failed');
+                }
+                if (taskId !== accountSenderMatchTaskId) {
+                    return;
+                }
+
+                accountSenderMatchTaskStatus = data.status || 'running';
+                if (data.status === 'completed') {
+                    accountSenderMatchPollTimer = null;
+                    applyAccountSenderMatchResult(data);
+                    return;
+                }
+                if (data.status === 'paused') {
+                    accountSenderMatchPollTimer = null;
+                    renderAccountSenderMatchSnapshot(data);
+                    return;
+                }
+                if (data.status === 'failed') {
+                    accountSenderMatchPollTimer = null;
+                    showToast(translateAppTextLocal('邮件匹配失败'), 'error');
+                    return;
+                }
+
+                renderAccountSenderMatchSnapshot(data);
+                accountSenderMatchPollTimer = setTimeout(pollAccountSenderMatchTaskStatus, 1000);
+            } catch (error) {
+                console.error('发件人邮件匹配进度查询失败:', error);
+                accountSenderMatchPollTimer = null;
+                showToast(translateAppTextLocal('邮件匹配失败'), 'error');
+            }
+        }
+
+        async function controlAccountSenderMatchTask(action) {
+            if (!accountSenderMatchTaskId) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/accounts/sender-match/control/${accountSenderMatchTaskId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.message || data.error || 'sender match control failed');
+                }
+
+                accountSenderMatchTaskStatus = data.status || accountSenderMatchTaskStatus;
+                renderAccountSenderMatchSnapshot(data);
+                if (data.status === 'running') {
+                    if (accountSenderMatchPollTimer) {
+                        clearTimeout(accountSenderMatchPollTimer);
+                    }
+                    accountSenderMatchPollTimer = setTimeout(pollAccountSenderMatchTaskStatus, 300);
+                } else if (data.status === 'paused') {
+                    if (accountSenderMatchPollTimer) {
+                        clearTimeout(accountSenderMatchPollTimer);
+                        accountSenderMatchPollTimer = null;
+                    }
+                    showToast(translateAppTextLocal('邮件匹配已暂停'));
+                } else if (data.status === 'stopped') {
+                    if (accountSenderMatchPollTimer) {
+                        clearTimeout(accountSenderMatchPollTimer);
+                        accountSenderMatchPollTimer = null;
+                    }
+                    showToast(translateAppTextLocal('邮件匹配已停止'));
+                }
+            } catch (error) {
+                console.error('发件人邮件匹配控制失败:', error);
+                showToast(translateAppTextLocal('邮件匹配控制失败'), 'error');
+            }
+        }
+
+        async function startAccountSenderMatchTask() {
+            if (currentGroupId === null || currentGroupId === undefined) {
+                showSelectGroupForAccountFilter();
+                return;
+            }
+
+            const groupIdAtStart = currentGroupId;
+            const senderAtStart = String(currentAccountSenderQuery || '').trim();
+            resetAccountSenderMatchTask();
+            clearGlobalAccountListCache();
+            currentAccountPage = 1;
+            accountSenderMatchTaskStatus = 'running';
+            renderAccountSenderMatchProgress({ total: 0, current: 0 });
+
+            try {
+                const response = await fetch('/api/accounts/sender-match/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildAccountSenderMatchTaskPayload())
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.message || data.error || 'sender match start failed');
+                }
+                if (groupIdAtStart !== currentGroupId || senderAtStart !== String(currentAccountSenderQuery || '').trim()) {
+                    return;
+                }
+                accountSenderMatchTaskId = data.task_id;
+                accountSenderMatchTaskStatus = data.status || 'running';
+                renderAccountSenderMatchProgress(data);
+                accountSenderMatchPollTimer = setTimeout(pollAccountSenderMatchTaskStatus, 500);
+            } catch (error) {
+                console.error('发件人邮件匹配启动失败:', error);
+                resetAccountSenderMatchTask();
+                showToast(translateAppTextLocal('启动邮件匹配失败'), 'error');
+            }
         }
 
         function updateAccountListHeaderForSearch() {
@@ -671,7 +1109,7 @@
 
         function buildAccountListQueryKey(groupId, page = currentAccountPage) {
             const params = new URLSearchParams();
-            // 全局搜索时不带 group_id，跨全部分组检索；分组搜索保留 group_id
+            // 全局邮箱搜索不带 group_id；当前分组搜索/发件人筛选/普通浏览保留当前 group_id
             if (!isGlobalAccountSearchActive() && groupId !== null && groupId !== undefined) {
                 params.set('group_id', String(groupId));
             }
@@ -683,6 +1121,12 @@
             const normalizedSearch = String(currentAccountSearchQuery || '').trim();
             if (normalizedSearch) {
                 params.set('search', normalizedSearch);
+            }
+
+            const normalizedSender = String(currentAccountSenderQuery || '').trim();
+            if (normalizedSender) {
+                params.set('sender', normalizedSender);
+                params.set('sender_match', currentAccountSenderMatch === 'not_has' ? 'not_has' : 'has');
             }
 
             getSelectedTagFilterIds().forEach(tagId => {
@@ -751,6 +1195,12 @@
                 activeBtn.classList.add('active');
             }
 
+            if (hasAccountSenderFilter()) {
+                currentAccountPage = 1;
+                reloadAccountListForFilters();
+                return;
+            }
+
             if (isGlobalAccountSearchActive() || currentGroupId) {
                 currentAccountPage = 1;  // 排序时重置到第 1 页
                 loadAccountsByGroup(currentGroupId, true, 1);
@@ -767,6 +1217,11 @@
         function setShowAnomaliesOnly(enabled, { reload = true } = {}) {
             showAnomaliesOnly = Boolean(enabled);
             syncAnomalyFilterCheckboxes(showAnomaliesOnly);
+            if (reload && hasAccountSenderFilter()) {
+                currentAccountPage = 1;
+                reloadAccountListForFilters();
+                return;
+            }
             if (reload && (isGlobalAccountSearchActive() || currentGroupId)) {
                 currentAccountPage = 1;
                 loadAccountsByGroup(currentGroupId, true, 1);
@@ -792,6 +1247,11 @@
 
         // Tag Filter Change Handler
         function handleTagFilterChange() {
+            if (hasAccountSenderFilter()) {
+                currentAccountPage = 1;
+                reloadAccountListForFilters();
+                return;
+            }
             if (isGlobalAccountSearchActive() || currentGroupId) {
                 currentAccountPage = 1;  // 标签过滤时重置到第 1 页
                 loadAccountsByGroup(currentGroupId, true, 1);
@@ -807,7 +1267,7 @@
             };
         }
 
-        // 搜索账号：全局范围跨全部分组；分组范围仅查当前分组
+        // 搜索账号：邮箱关键词支持当前分组/全局；发件人筛选仅查当前分组的完整分页结果
         async function searchAccounts(query) {
             const container = document.getElementById('accountList');
             currentAccountSearchQuery = String(query || '').trim();
@@ -815,7 +1275,8 @@
             // 标准/简洁模式搜索框保持同步
             syncGlobalSearchInputs(currentAccountSearchQuery);
 
-            if (!currentAccountSearchQuery) {
+            if (!hasAccountListTextFilter()) {
+                resetAccountSenderMatchTask();
                 clearGlobalAccountListCache();
                 updateAccountListHeaderForSearch();
                 if (currentGroupId) {
@@ -834,24 +1295,18 @@
                 return;
             }
 
-            if (currentAccountSearchScope === ACCOUNT_SEARCH_SCOPE_GROUP
-                && (currentGroupId === null || currentGroupId === undefined)) {
-                updateAccountListHeaderForSearch();
-                if (container) {
-                    container.innerHTML = `
-                        <div class="empty-state">
-                            <span class="empty-icon">📁</span>
-                            <p>${translateAppTextLocal('请从左侧选择一个分组')}</p>
-                        </div>
-                    `;
-                }
-                if (typeof renderCompactErrorState === 'function') {
-                    renderCompactErrorState(translateAppTextLocal('请选择分组'));
-                }
+            if (hasAccountSenderFilter()) {
+                await reloadAccountListForFilters();
                 return;
             }
 
-            // 刷新搜索结果；全局搜索使用独立缓存，分组搜索沿用分组缓存键。
+            resetAccountSenderMatchTask();
+            if (!isGlobalAccountSearchActive() && (currentGroupId === null || currentGroupId === undefined)) {
+                showSelectGroupForAccountFilter();
+                return;
+            }
+
+            // 刷新搜索结果；全局邮箱搜索使用独立缓存，当前分组/发件人筛选沿用分组缓存键。
             clearGlobalAccountListCache();
             updateAccountListHeaderForSearch();
 
@@ -1089,7 +1544,7 @@
 
         function buildCurrentGroupAccountFilterParams({ includeAnomalies = true } = {}) {
             const params = new URLSearchParams();
-            // 全局搜索时不限分组；否则跟随当前分组
+            // 全局邮箱搜索不限分组；当前分组搜索/发件人筛选/普通浏览跟随当前分组
             if (!isGlobalAccountSearchActive() && currentGroupId !== null && currentGroupId !== undefined) {
                 params.set('group_id', String(currentGroupId));
             }
@@ -1097,6 +1552,11 @@
             const normalizedSearch = String(currentAccountSearchQuery || '').trim();
             if (normalizedSearch) {
                 params.set('search', normalizedSearch);
+            }
+            const normalizedSender = String(currentAccountSenderQuery || '').trim();
+            if (normalizedSender) {
+                params.set('sender', normalizedSender);
+                params.set('sender_match', currentAccountSenderMatch === 'not_has' ? 'not_has' : 'has');
             }
             getSelectedTagFilterIds().forEach(tagId => {
                 params.append('tag_id', String(tagId));
@@ -1108,6 +1568,9 @@
         }
 
         async function fetchCurrentGroupAccountIds({ includeAnomalies = true } = {}) {
+            if (isAccountSenderMatchResultActive()) {
+                return accountSenderMatchMatchedIds.slice();
+            }
             const params = buildCurrentGroupAccountFilterParams({ includeAnomalies });
             const response = await fetch(`/api/accounts/all-ids?${params.toString()}`);
             const data = await response.json();
@@ -1119,7 +1582,7 @@
                 .filter((id) => Number.isInteger(id) && id > 0);
         }
 
-        // 全选当前结果集全部账号（跨页；全局搜索时跨分组，否则限当前分组）
+        // 全选当前结果集全部账号（跨页；全局邮箱搜索跨分组，当前分组搜索/发件人筛选限当前分组）
         async function selectAllAccountsInGroup() {
             closeSelectAllMenus();
             if (!isGlobalAccountSearchActive() && (currentGroupId === null || currentGroupId === undefined)) {

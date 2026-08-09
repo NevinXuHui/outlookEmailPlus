@@ -12,10 +12,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from dataclasses import dataclass
 from typing import Optional
+
+from flask import current_app, has_app_context
 
 from outlook_web.db import create_sqlite_connection
 from outlook_web.repositories import pool as pool_repo
+from outlook_web.security.crypto import decrypt_data, encrypt_data
+from outlook_web.services import graph as graph_service
+from outlook_web.services.imap_generic import get_emails_imap_generic
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,13 @@ VALID_PROVIDERS = {"outlook", "imap", "custom", "gptmail", "cloudflare_temp_mail
 # 这些 provider（含未指定）在 accounts 池无命中时，回退到 temp_emails 临时邮箱池领取。
 # custom/gptmail 对应「通用 API (GPTMail)」临时邮箱；None 表示不限 provider。
 _TEMP_ELIGIBLE_PROVIDERS = {None, "custom", "gptmail"}
+
+
+@dataclass(frozen=True)
+class PoolClaimHealthResult:
+    ok: bool
+    result: str = "network_error"
+    detail: str = ""
 
 
 def _validate_provider(provider: Optional[str]) -> Optional[str]:
@@ -127,6 +141,150 @@ def _read_settings_via_conn(conn) -> dict:
     return result
 
 
+def _pool_claim_health_check_enabled() -> bool:
+    """测试环境默认跳过真实上游验证；生产接口默认启用。"""
+    if os.environ.get("POOL_CLAIM_HEALTH_CHECK_IN_TESTS") == "true":
+        return True
+    if "outlookEmail-tests-" in os.environ.get("DATABASE_PATH", ""):
+        return False
+    if has_app_context() and current_app.config.get("TESTING"):
+        return bool(current_app.config.get("POOL_CLAIM_HEALTH_CHECK_ENABLED_IN_TESTS"))
+    return True
+
+
+def _decrypt_claimed_account_credentials(account: dict) -> tuple[dict, Optional[str]]:
+    hydrated = dict(account or {})
+    for field_name in ("password", "refresh_token", "imap_password"):
+        value = hydrated.get(field_name)
+        if not value:
+            continue
+        try:
+            hydrated[field_name] = decrypt_data(str(value))
+        except Exception as exc:
+            return hydrated, f"{field_name} 解密失败: {exc}"
+    return hydrated, None
+
+
+def _get_claim_account_proxy_url(conn, account: dict) -> str:
+    group_id = account.get("group_id")
+    if not group_id:
+        return ""
+    try:
+        row = conn.execute("SELECT proxy_url FROM groups WHERE id = ?", (int(group_id),)).fetchone()
+        return str((row or {})["proxy_url"] or "") if row else ""
+    except Exception:
+        return ""
+
+
+def _is_transient_health_error(message: str) -> bool:
+    text = str(message or "").lower()
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "connection",
+        "proxy",
+        "network",
+        "429",
+        "rate limit",
+        "temporarily",
+        "请求异常",
+        "请求被限流",
+        "代理",
+        "连接",
+        "超时",
+        "网络",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _failed_claim_health_result(message: str) -> PoolClaimHealthResult:
+    result = "network_error" if _is_transient_health_error(message) else "credential_invalid"
+    return PoolClaimHealthResult(False, result=result, detail=str(message or "邮箱健康验证失败")[:DETAIL_MAX_LEN])
+
+
+def _persist_rotated_refresh_token(conn, account_id: int, refresh_token: str) -> None:
+    conn.execute(
+        "UPDATE accounts SET refresh_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (encrypt_data(refresh_token), int(account_id)),
+    )
+    conn.commit()
+
+
+def _check_claimed_account_health(conn, account: dict) -> PoolClaimHealthResult:
+    if not _pool_claim_health_check_enabled():
+        return PoolClaimHealthResult(True)
+
+    hydrated, decrypt_error = _decrypt_claimed_account_credentials(account)
+    if decrypt_error:
+        return PoolClaimHealthResult(False, result="credential_invalid", detail=decrypt_error[:DETAIL_MAX_LEN])
+
+    account_type = str(hydrated.get("account_type") or "outlook").strip().lower()
+    provider = str(hydrated.get("provider") or "").strip().lower()
+    if account_type == "temp_mail" or provider == "cloudflare_temp_mail":
+        return PoolClaimHealthResult(True)
+
+    email_addr = str(hydrated.get("email") or "").strip()
+    proxy_url = _get_claim_account_proxy_url(conn, hydrated)
+
+    if account_type == "imap":
+        if not str(hydrated.get("imap_host") or "").strip() or not str(hydrated.get("imap_password") or "").strip():
+            return PoolClaimHealthResult(False, result="credential_invalid", detail="IMAP 配置不完整")
+        result = get_emails_imap_generic(
+            email_addr=email_addr,
+            imap_password=hydrated.get("imap_password", "") or "",
+            imap_host=hydrated.get("imap_host", "") or "",
+            imap_port=hydrated.get("imap_port", 993) or 993,
+            folder="inbox",
+            provider=hydrated.get("provider", "_default") or "_default",
+            skip=0,
+            top=1,
+        )
+        if result.get("success"):
+            return PoolClaimHealthResult(True)
+        return _failed_claim_health_result(result.get("error") or "IMAP 读取失败")
+
+    client_id = str(hydrated.get("client_id") or "").strip()
+    refresh_token = str(hydrated.get("refresh_token") or "").strip()
+    if not client_id or not refresh_token:
+        return PoolClaimHealthResult(False, result="credential_invalid", detail="OAuth 凭据不完整")
+
+    ok, error_msg, new_refresh_token = graph_service.test_refresh_token_with_rotation(
+        client_id,
+        refresh_token,
+        proxy_url,
+    )
+    if not ok:
+        return _failed_claim_health_result(error_msg or "Refresh token 验证失败")
+
+    if new_refresh_token and new_refresh_token != refresh_token:
+        _persist_rotated_refresh_token(conn, int(hydrated["id"]), new_refresh_token)
+
+    return PoolClaimHealthResult(True)
+
+
+def _complete_failed_claim_health_check(
+    conn,
+    account: dict,
+    *,
+    caller_id: str,
+    task_id: str,
+    health: PoolClaimHealthResult,
+    project_key: Optional[str],
+) -> None:
+    detail = f"claim 前健康验证失败: {health.detail or health.result}"
+    pool_repo.complete(
+        conn,
+        int(account["id"]),
+        str(account["claim_token"]),
+        caller_id,
+        task_id,
+        health.result if health.result in VALID_RESULTS else "network_error",
+        detail[:DETAIL_MAX_LEN],
+        claimed_project_key=project_key,
+        enable_project_reuse=False,
+    )
+
+
 def _is_project_reuse_eligible_account(
     *,
     provider: Optional[str],
@@ -169,22 +327,51 @@ def claim_random(
         default_lease = settings["pool_default_lease_seconds"]
         _validate_lease_seconds(default_lease)
 
-        try:
-            account = pool_repo.claim_atomic(
-                conn,
-                caller_id=caller_id,
-                task_id=task_id,
-                lease_seconds=default_lease,
-                provider=provider,
-                project_key=project_key,
-                email_domain=email_domain,
-            )
-        except pool_repo.PoolRepositoryError as e:
-            # 将 Repository 层异常转换为 Service 层异常
-            raise PoolServiceError(str(e), e.error_code, http_status=500) from e
+        attempted_account_ids: list[int] = []
+        last_health_error = ""
+        while True:
+            try:
+                account = pool_repo.claim_atomic(
+                    conn,
+                    caller_id=caller_id,
+                    task_id=task_id,
+                    lease_seconds=default_lease,
+                    provider=provider,
+                    project_key=project_key,
+                    email_domain=email_domain,
+                    exclude_account_ids=attempted_account_ids,
+                )
+            except pool_repo.PoolRepositoryError as e:
+                # 将 Repository 层异常转换为 Service 层异常
+                raise PoolServiceError(str(e), e.error_code, http_status=500) from e
 
-        if account is not None:
-            return account
+            if account is None:
+                break
+
+            attempted_account_ids.append(int(account["id"]))
+            health = _check_claimed_account_health(conn, account)
+            if health.ok:
+                return account
+
+            last_health_error = health.detail or health.result
+            logger.warning(
+                "[pool] claim 前健康验证失败 account_id=%s email=%s result=%s detail=%s",
+                account.get("id"),
+                account.get("email"),
+                health.result,
+                last_health_error,
+            )
+            try:
+                _complete_failed_claim_health_check(
+                    conn,
+                    account,
+                    caller_id=caller_id,
+                    task_id=task_id,
+                    health=health,
+                    project_key=project_key,
+                )
+            except pool_repo.PoolRepositoryError as e:
+                raise PoolServiceError(str(e), e.error_code, http_status=500) from e
 
         # accounts 池无命中：对临时邮箱类 provider（custom/gptmail/未指定）回退到 temp_emails 池领取
         if provider in _TEMP_ELIGIBLE_PROVIDERS:
@@ -227,6 +414,13 @@ def claim_random(
                 _delete_cf_mailbox_nonblocking(email=created_email, meta=created_meta)
                 raise PoolServiceError("动态写入 CF 邮箱失败", "db_error", http_status=500) from e
 
+        if attempted_account_ids:
+            detail = f"最后一次失败原因: {last_health_error}" if last_health_error else ""
+            raise PoolServiceError(
+                f"池中没有通过健康验证的可用邮箱{('，' + detail) if detail else ''}",
+                "no_available_account",
+                http_status=200,
+            )
         raise PoolServiceError("池中没有符合条件的可用邮箱", "no_available_account", http_status=200)
     finally:
         conn.close()

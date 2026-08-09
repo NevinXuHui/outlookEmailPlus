@@ -215,6 +215,7 @@ def claim_atomic(
     exclude_recent_minutes: Optional[int] = None,
     project_key: Optional[str] = None,
     email_domain: Optional[str] = None,
+    exclude_account_ids: Optional[List[int]] = None,
 ) -> Optional[dict]:
     sql = """
         SELECT a.* FROM accounts a
@@ -251,6 +252,16 @@ def claim_atomic(
     if email_domain:
         sql += " AND a.email_domain = ? COLLATE NOCASE"
         params.append(email_domain.strip().lower())
+
+    normalized_excluded_ids = [
+        int(account_id)
+        for account_id in (exclude_account_ids or [])
+        if str(account_id or "").strip().isdigit()
+    ]
+    if normalized_excluded_ids:
+        placeholders = ",".join(["?"] * len(normalized_excluded_ids))
+        sql += f" AND a.id NOT IN ({placeholders})"
+        params.extend(normalized_excluded_ids)
 
     # PR#27 + v22 语义变更: project_key 防同项目复用
     # v22 前：NOT EXISTS 即排除（含 claim trace），导致 release 后需删 usage 行（Bug #28）
