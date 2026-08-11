@@ -773,22 +773,48 @@ class PoolServiceTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def _make_account(self, pool_status="available"):
+    def _make_account(self, pool_status="available", group_id=None, provider="outlook"):
         import secrets
 
         conn = self.create_conn()
         try:
             email = f"svc_test_{secrets.token_hex(4)}@example.com"
-            conn.execute(
-                """
-                INSERT INTO accounts (email, client_id, refresh_token, status, pool_status)
-                VALUES (?, 'test_client', 'test_token', 'active', ?)
-                """,
-                (email, pool_status),
-            )
+            if group_id is None:
+                conn.execute(
+                    """
+                    INSERT INTO accounts (email, client_id, refresh_token, status, pool_status, provider)
+                    VALUES (?, 'test_client', 'test_token', 'active', ?, ?)
+                    """,
+                    (email, pool_status, provider),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO accounts (
+                        email, client_id, refresh_token, status, pool_status, provider, group_id
+                    ) VALUES (?, 'test_client', 'test_token', 'active', ?, ?, ?)
+                    """,
+                    (email, pool_status, provider, group_id),
+                )
             conn.commit()
             row = conn.execute("SELECT id FROM accounts WHERE email = ?", (email,)).fetchone()
             return row["id"]
+        finally:
+            conn.close()
+
+    def _make_group(self, name_prefix="SvcGroup"):
+        import secrets
+
+        conn = self.create_conn()
+        try:
+            name = f"{name_prefix}_{secrets.token_hex(3)}"
+            conn.execute(
+                "INSERT INTO groups (name, description, color, proxy_url, is_system) VALUES (?, '', '#123456', '', 0)",
+                (name,),
+            )
+            conn.commit()
+            row = conn.execute("SELECT id FROM groups WHERE name = ?", (name,)).fetchone()
+            return int(row["id"]), name
         finally:
             conn.close()
 
@@ -797,6 +823,87 @@ class PoolServiceTests(unittest.TestCase):
         result = self.pool_service.claim_random(caller_id="bot", task_id="t1")
         self.assertIn("claim_token", result)
         self.assertIn("lease_expires_at", result)
+
+    def test_claim_random_filters_by_group_id(self):
+        group_a, _ = self._make_group(name_prefix="SvcA")
+        group_b, _ = self._make_group(name_prefix="SvcB")
+        account_a = self._make_account(group_id=group_a)
+        self._make_account(group_id=group_b)
+
+        result = self.pool_service.claim_random(
+            caller_id="bot",
+            task_id="t_group_id",
+            group_id=group_a,
+        )
+        self.assertEqual(result["id"], account_a)
+
+    def test_claim_random_filters_by_group_name(self):
+        group_id, group_name = self._make_group(name_prefix="SvcNamed")
+        account_id = self._make_account(group_id=group_id)
+        self._make_account()
+
+        result = self.pool_service.claim_random(
+            caller_id="bot",
+            task_id="t_group_name",
+            group_name=group_name,
+        )
+        self.assertEqual(result["id"], account_id)
+
+    def test_claim_random_group_not_found(self):
+        with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
+            self.pool_service.claim_random(
+                caller_id="bot",
+                task_id="t_group_missing",
+                group_id=99999999,
+            )
+        self.assertEqual(ctx.exception.http_status, 400)
+        self.assertEqual(ctx.exception.error_code, "group_not_found")
+
+    def test_claim_random_invalid_group_id(self):
+        with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
+            self.pool_service.claim_random(
+                caller_id="bot",
+                task_id="t_group_invalid",
+                group_id="abc",
+            )
+        self.assertEqual(ctx.exception.http_status, 400)
+        self.assertEqual(ctx.exception.error_code, "invalid_group_id")
+
+    def test_claim_random_group_mismatch(self):
+        group_id, group_name = self._make_group(name_prefix="SvcMatch")
+        other_id, _ = self._make_group(name_prefix="SvcOther")
+        self._make_account(group_id=group_id)
+
+        with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
+            self.pool_service.claim_random(
+                caller_id="bot",
+                task_id="t_group_mismatch",
+                group_id=other_id,
+                group_name=group_name,
+            )
+        self.assertEqual(ctx.exception.error_code, "group_mismatch")
+
+    def test_claim_random_group_filter_skips_temp_fallback(self):
+        """指定分组后，即使 accounts 无命中也不回退 temp_emails / CF 创建。"""
+        group_id, _ = self._make_group(name_prefix="SvcNoFallback")
+
+        with mock.patch.object(
+            self.pool_service.pool_repo,
+            "claim_temp_mailbox_atomic",
+        ) as temp_mock, mock.patch.object(
+            self.pool_service,
+            "_create_cf_mailbox_for_pool",
+        ) as cf_mock:
+            with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
+                self.pool_service.claim_random(
+                    caller_id="bot",
+                    task_id="t_group_no_fallback",
+                    group_id=group_id,
+                )
+
+        self.assertEqual(ctx.exception.error_code, "no_available_account")
+        temp_mock.assert_not_called()
+        cf_mock.assert_not_called()
 
     def test_claim_random_rejects_unhealthy_account_before_returning(self):
         account_id = self._make_account()

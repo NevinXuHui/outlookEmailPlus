@@ -4,7 +4,9 @@ from typing import Any
 
 from flask import jsonify, request
 
+from outlook_web.repositories import groups as groups_repo
 from outlook_web.repositories import settings as settings_repo
+from outlook_web.repositories import temp_emails as temp_emails_repo
 from outlook_web.security.auth import api_key_required, get_external_api_consumer
 from outlook_web.security.external_api_guard import external_api_guards
 from outlook_web.services import external_api as external_api_service
@@ -98,6 +100,8 @@ def api_external_pool_claim_random():
     provider = body.get("provider")
     project_key = body.get("project_key")
     email_domain = body.get("email_domain")
+    group_id = body.get("group_id")
+    group_name = body.get("group_name")
 
     try:
         account = claim_random(
@@ -106,6 +110,8 @@ def api_external_pool_claim_random():
             provider=provider,
             project_key=project_key,
             email_domain=email_domain,
+            group_id=group_id,
+            group_name=group_name,
         )
         data = {
             "account_id": account["id"],
@@ -122,6 +128,8 @@ def api_external_pool_claim_random():
                 "provider": provider or "",
                 "project_key": project_key or "",
                 "email_domain": email_domain or "",
+                "group_id": group_id if group_id is not None else "",
+                "group_name": group_name or "",
                 "account_id": data["account_id"],
             },
         )
@@ -255,6 +263,35 @@ def api_external_pool_stats():
         stats = get_pool_stats()
         _audit(endpoint, "ok", details={"snapshot": True})
         return jsonify(external_api_service.ok(stats))
+    except Exception as exc:
+        _audit(
+            endpoint,
+            "error",
+            details={"code": "INTERNAL_ERROR", "err": type(exc).__name__},
+        )
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+@external_api_guards()
+def api_external_groups():
+    """GET /api/external/groups — 获取全部分组摘要，供 claim-random 选择分组。"""
+    endpoint = "/api/external/groups"
+    disabled_resp = _check_pool_external_enabled(endpoint)
+    if disabled_resp is not None:
+        return disabled_resp
+    access_resp = _check_pool_access(endpoint)
+    if access_resp is not None:
+        return access_resp
+    try:
+        groups = groups_repo.load_groups_external_summary()
+        # 临时邮箱分组的数量来自 temp_emails 表
+        temp_group = next((g for g in groups if g.get("name") == "临时邮箱"), None)
+        if temp_group is not None:
+            temp_count = int(temp_emails_repo.get_temp_email_count() or 0)
+            temp_group["account_count"] = temp_count
+        _audit(endpoint, "ok", details={"group_count": len(groups)})
+        return jsonify(external_api_service.ok({"groups": groups, "total": len(groups)}))
     except Exception as exc:
         _audit(
             endpoint,

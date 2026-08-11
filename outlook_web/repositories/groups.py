@@ -278,6 +278,51 @@ def load_groups_with_account_count() -> List[Dict]:
     rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
+def load_groups_external_summary() -> List[Dict]:
+    """加载对外暴露的分组摘要（不含 proxy / 验证策略等敏感字段）。"""
+    db = get_db()
+    cursor = db.execute(
+        """
+        SELECT
+            g.id,
+            g.name,
+            g.description,
+            g.color,
+            g.is_system,
+            g.created_at,
+            COALESCE(a.cnt, 0) AS account_count,
+            COALESCE(p.available_cnt, 0) AS pool_available_count
+        FROM groups g
+        LEFT JOIN (
+            SELECT group_id, COUNT(*) AS cnt
+            FROM accounts
+            GROUP BY group_id
+        ) a ON a.group_id = g.id
+        LEFT JOIN (
+            SELECT group_id, COUNT(*) AS available_cnt
+            FROM accounts
+            WHERE status = 'active' AND pool_status = 'available'
+            GROUP BY group_id
+        ) p ON p.group_id = g.id
+        ORDER BY
+            CASE WHEN g.name = '临时邮箱' THEN 0 ELSE 1 END,
+            g.id
+        """
+    )
+    rows = cursor.fetchall()
+    result: List[Dict] = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = int(item["id"])
+        item["is_system"] = bool(item.get("is_system") or 0)
+        item["account_count"] = int(item.get("account_count") or 0)
+        item["pool_available_count"] = int(item.get("pool_available_count") or 0)
+        item["description"] = item.get("description") or ""
+        item["color"] = item.get("color") or ""
+        item["created_at"] = item.get("created_at") or ""
+        result.append(item)
+    return result
+
 
 def get_group_by_name(name: str) -> Optional[Dict]:
     """按名称查找分组（精确匹配，不区分大小写）"""

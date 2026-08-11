@@ -84,7 +84,13 @@ class ExternalPoolApiTests(unittest.TestCase):
 
             settings_repo.set_setting(setting_key, "true" if enabled else "false")
 
-    def _insert_pool_account(self, *, provider: str = "outlook", pool_status: str = "available") -> int:
+    def _insert_pool_account(
+        self,
+        *,
+        provider: str = "outlook",
+        pool_status: str = "available",
+        group_id: int = 1,
+    ) -> int:
         email_addr = f"{uuid.uuid4().hex}@extpool.test"
         with self.app.app_context():
             from outlook_web.db import get_db
@@ -102,7 +108,7 @@ class ExternalPoolApiTests(unittest.TestCase):
                     "pw",
                     "cid-test",
                     "rt-test",
-                    1,
+                    group_id,
                     "active",
                     "outlook",
                     provider,
@@ -112,6 +118,20 @@ class ExternalPoolApiTests(unittest.TestCase):
             db.commit()
             row = db.execute("SELECT id FROM accounts WHERE email = ?", (email_addr,)).fetchone()
             return int(row["id"])
+
+    def _make_group(self, *, name_prefix: str = "ExtPoolGroup") -> tuple[int, str]:
+        with self.app.app_context():
+            from outlook_web.db import get_db
+
+            db = get_db()
+            name = f"{name_prefix}_{uuid.uuid4().hex[:6]}"
+            db.execute(
+                "INSERT INTO groups (name, description, color, proxy_url, is_system) VALUES (?, '', '#123456', '', 0)",
+                (name,),
+            )
+            db.commit()
+            row = db.execute("SELECT id FROM groups WHERE name = ?", (name,)).fetchone()
+            return int(row["id"]), name
 
     def test_old_anonymous_pool_endpoints_are_removed(self):
         client = self.app.test_client()
@@ -242,6 +262,88 @@ class ExternalPoolApiTests(unittest.TestCase):
         self.assertIn("claim_token", payload)
         self.assertIn("lease_expires_at", payload)
 
+    def test_external_pool_claim_random_filters_by_group_id(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+
+        group_a, _ = self._make_group(name_prefix="GroupA")
+        group_b, _ = self._make_group(name_prefix="GroupB")
+        account_a = self._insert_pool_account(provider="outlook", group_id=group_a)
+        self._insert_pool_account(provider="outlook", group_id=group_b)
+
+        resp = client.post(
+            "/api/external/pool/claim-random",
+            headers=self._auth_headers(),
+            json={
+                "caller_id": "ext-worker-01",
+                "task_id": "task-ext-group-id",
+                "provider": "outlook",
+                "group_id": group_a,
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("data", {}).get("account_id"), account_a)
+
+    def test_external_pool_claim_random_filters_by_group_name(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+
+        group_id, group_name = self._make_group(name_prefix="NamedGroup")
+        account_id = self._insert_pool_account(provider="outlook", group_id=group_id)
+        self._insert_pool_account(provider="outlook", group_id=1)
+
+        resp = client.post(
+            "/api/external/pool/claim-random",
+            headers=self._auth_headers(),
+            json={
+                "caller_id": "ext-worker-01",
+                "task_id": "task-ext-group-name",
+                "provider": "outlook",
+                "group_name": group_name,
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("data", {}).get("account_id"), account_id)
+
+    def test_external_pool_claim_random_group_not_found(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+        self._insert_pool_account(provider="outlook")
+
+        resp = client.post(
+            "/api/external/pool/claim-random",
+            headers=self._auth_headers(),
+            json={
+                "caller_id": "ext-worker-01",
+                "task_id": "task-ext-group-missing",
+                "provider": "outlook",
+                "group_id": 99999999,
+            },
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("code"), "GROUP_NOT_FOUND")
+
     def test_external_pool_claim_random_rejects_unhealthy_account(self):
         client = self.app.test_client()
         self._set_external_api_key("abc123")
@@ -325,6 +427,7 @@ class ExternalPoolApiTests(unittest.TestCase):
                 "api_external_pool_claim_release",
                 "api_external_pool_claim_complete",
                 "api_external_pool_stats",
+                "api_external_groups",
             },
         )
 
@@ -426,6 +529,76 @@ class ExternalPoolApiTests(unittest.TestCase):
             set(pool_counts.keys()),
             {"available", "claimed", "used", "cooldown", "frozen", "retired"},
         )
+
+    def test_external_groups_requires_api_key(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+
+        resp = client.get("/api/external/groups")
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.get_json().get("code"), "UNAUTHORIZED")
+
+    def test_external_groups_success(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+
+        group_id, group_name = self._make_group(name_prefix="ListGroup")
+        self._insert_pool_account(provider="outlook", group_id=group_id, pool_status="available")
+        self._insert_pool_account(provider="outlook", group_id=group_id, pool_status="used")
+
+        resp = client.get("/api/external/groups", headers=self._auth_headers())
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("code"), "OK")
+        payload = data.get("data") or {}
+        groups = payload.get("groups") or []
+        self.assertIsInstance(groups, list)
+        self.assertGreaterEqual(int(payload.get("total") or 0), 1)
+        matched = next((g for g in groups if g.get("id") == group_id), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.get("name"), group_name)
+        self.assertEqual(matched.get("account_count"), 2)
+        self.assertEqual(matched.get("pool_available_count"), 1)
+        self.assertNotIn("proxy_url", matched)
+        self.assertIn("is_system", matched)
+        self.assertIn("description", matched)
+
+    def test_external_groups_requires_pool_access_for_multi_key(self):
+        client = self.app.test_client()
+        self._create_external_api_key("no-pool", "key-no-pool", pool_access=False)
+        with self.app.app_context():
+            from outlook_web.repositories import settings as settings_repo
+
+            settings_repo.set_setting("pool_external_enabled", "true")
+
+        resp = client.get("/api/external/groups", headers=self._auth_headers("key-no-pool"))
+
+        self.assertEqual(resp.status_code, 403)
+        data = resp.get_json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("code"), "FORBIDDEN")
+
+    def test_external_groups_feature_disabled_when_switch_off(self):
+        client = self.app.test_client()
+        self._set_external_api_key("abc123")
+
+        resp = client.get("/api/external/groups", headers=self._auth_headers())
+
+        self.assertEqual(resp.status_code, 403)
+        data = resp.get_json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("code"), "FEATURE_DISABLED")
 
     def test_external_pool_stats_returns_feature_disabled_when_switch_off(self):
         client = self.app.test_client()

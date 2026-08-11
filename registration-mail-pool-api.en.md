@@ -108,6 +108,7 @@ Time fields use ISO 8601, for example:
 | `POST /api/external/pool/claim-release` | release a mailbox | Common |
 | `POST /api/external/pool/claim-complete` | submit the task result | Common |
 | `GET /api/external/pool/stats` | inspect pool counts | Optional |
+| `GET /api/external/groups` | list all mailbox groups | Optional |
 
 ---
 
@@ -324,13 +325,17 @@ Request body:
 | `caller_id` | string | Yes | caller instance, node, or worker identity |
 | `task_id` | string | Yes | unique task ID |
 | `provider` | string | No | provider filter: `outlook` / `imap` / `custom` / `cloudflare_temp_mail` |
+| `email_domain` | string | No | mailbox domain filter (case-insensitive) |
+| `group_id` | integer/string | No | filter available mailboxes by group ID |
+| `group_name` | string | No | filter by group name (case-insensitive); may be combined with `group_id`, but both must point to the same group |
 
 Current implementation notes:
 
-- the current pool API supports filtering only by `provider`
+- the current pool API supports filtering by `provider`, `email_domain`, and `group_id` / `group_name`
 - `outlook.com`, `hotmail.com`, `live.com`, and `live.cn` all map to `provider=outlook`
-- the current external pool API does not support extra filtering by domain, group, or tags
-- when `provider=cloudflare_temp_mail` and no eligible mailbox exists in pool, the service dynamically creates a CF temp mailbox and returns it as claimed
+- the current external pool API still does not support filtering by tags
+- when `group_id` or `group_name` is provided, only accounts in that group are claimed; there is no fallback to `temp_emails` and no dynamic CF mailbox creation
+- when no group filter is set and `provider=cloudflare_temp_mail` with no eligible mailbox in pool, the service dynamically creates a CF temp mailbox and returns it as claimed
 
 Success response fields:
 
@@ -499,6 +504,66 @@ Response fields:
 - `pool_counts.frozen`
 - `pool_counts.retired`
 
+### `GET /api/external/groups`
+
+Purpose: list all mailbox group summaries so callers can choose `group_id` / `group_name` for `claim-random`.
+
+Access requirements:
+
+- valid `X-API-Key`
+- `pool_external_enabled=true`
+- current key has `pool_access=true` (legacy single key is treated as allowed)
+
+Response fields:
+
+- `total`: number of groups
+- `groups[]`:
+  - `id`
+  - `name`
+  - `description`
+  - `color`
+  - `is_system`
+  - `account_count`: total accounts in the group (temp-mail group uses `temp_emails`)
+  - `pool_available_count`: accounts with `status=active` and `pool_status=available`
+  - `created_at`
+
+Notes:
+
+- does not expose internal fields such as `proxy_url` or verification policy
+- intended to work with `claim-random` group filters
+
+#### Copy-paste Example
+
+```bash
+curl -X GET "https://api.example.com/api/external/groups" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+Success response example:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "success",
+  "data": {
+    "total": 2,
+    "groups": [
+      {
+        "id": 1,
+        "name": "Default",
+        "description": "",
+        "color": "#1a1a1a",
+        "is_system": false,
+        "account_count": 12,
+        "pool_available_count": 8,
+        "created_at": "2026-04-01 10:00:00"
+      }
+    ]
+  }
+}
+```
+
 ---
 
 ## Important Behavioral Notes
@@ -552,6 +617,10 @@ The sync `wait-message` endpoint returns only a matching message that appears af
 | `UPSTREAM_READ_FAILED` | Graph / IMAP read failed |
 | `PROXY_ERROR` | proxy connection failed |
 | `no_available_account` | no eligible mailbox is currently available in the pool |
+| `INVALID_GROUP_ID` | `group_id` is not a positive integer |
+| `GROUP_NAME_TOO_LONG` | `group_name` exceeds the max length |
+| `GROUP_NOT_FOUND` | the specified group does not exist |
+| `GROUP_MISMATCH` | `group_id` and `group_name` do not refer to the same group |
 | `TOKEN_MISMATCH` | `claim_token` does not match |
 | `CALLER_MISMATCH` | `caller_id` or `task_id` does not match the claim record |
 | `NOT_CLAIMED` | the mailbox is not currently in `claimed` state |

@@ -35,6 +35,11 @@ def create_blueprint(csrf_exempt: Optional[Callable] = None) -> Blueprint:
             external_pool_controller.api_external_pool_stats,
             ["GET"],
         ),
+        (
+            "/api/external/groups",
+            external_pool_controller.api_external_groups,
+            ["GET"],
+        ),
     ]
 
     # 所有 external_pool 端点都走同一套鉴权链路，这里只负责统一挂载 CSRF 豁免。

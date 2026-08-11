@@ -14,7 +14,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from flask import current_app, has_app_context
 
@@ -30,6 +30,7 @@ CALLER_ID_MAX_LEN = 64
 TASK_ID_MAX_LEN = 128
 PROJECT_KEY_MAX_LEN = 128
 EMAIL_DOMAIN_MAX_LEN = 128
+GROUP_NAME_MAX_LEN = 128
 REASON_MAX_LEN = 256
 DETAIL_MAX_LEN = 512
 
@@ -124,6 +125,87 @@ def _validate_email_domain(email_domain: Optional[str]) -> Optional[str]:
     if len(d) > EMAIL_DOMAIN_MAX_LEN:
         raise PoolServiceError(f"email_domain 超过最大长度 {EMAIL_DOMAIN_MAX_LEN}", "email_domain_too_long")
     return d
+
+
+def _normalize_group_id(group_id: Any) -> Optional[int]:
+    """规范化 group_id；空值视为 None，非法值抛 invalid_group_id。"""
+    if group_id is None:
+        return None
+    if isinstance(group_id, bool):
+        raise PoolServiceError("group_id 必须是正整数", "invalid_group_id")
+    if isinstance(group_id, int):
+        if group_id <= 0:
+            raise PoolServiceError("group_id 必须是正整数", "invalid_group_id")
+        return group_id
+    text = str(group_id).strip()
+    if not text:
+        return None
+    if not text.isdigit():
+        raise PoolServiceError("group_id 必须是正整数", "invalid_group_id")
+    value = int(text)
+    if value <= 0:
+        raise PoolServiceError("group_id 必须是正整数", "invalid_group_id")
+    return value
+
+
+def _normalize_group_name(group_name: Optional[str]) -> Optional[str]:
+    if group_name is None:
+        return None
+    name = str(group_name).strip()
+    if not name:
+        return None
+    if len(name) > GROUP_NAME_MAX_LEN:
+        raise PoolServiceError(
+            f"group_name 超过最大长度 {GROUP_NAME_MAX_LEN}",
+            "group_name_too_long",
+        )
+    return name
+
+
+def _resolve_group_id(
+    conn,
+    *,
+    group_id: Any = None,
+    group_name: Optional[str] = None,
+) -> Optional[int]:
+    """
+    将 group_id / group_name 解析为最终筛选用 group_id。
+
+    - 两者都未提供：返回 None（不按分组筛选）
+    - 仅 group_id：校验分组存在
+    - 仅 group_name：按名称（不区分大小写）解析
+    - 同时提供：必须指向同一分组，否则 group_mismatch
+    """
+    gid = _normalize_group_id(group_id)
+    gname = _normalize_group_name(group_name)
+
+    if gid is None and gname is None:
+        return None
+
+    if gid is not None and gname is not None:
+        row = conn.execute(
+            "SELECT id, name FROM groups WHERE id = ?",
+            (gid,),
+        ).fetchone()
+        if row is None:
+            raise PoolServiceError("指定分组不存在", "group_not_found")
+        if str(row["name"] or "").strip().lower() != gname.lower():
+            raise PoolServiceError("group_id 与 group_name 不匹配", "group_mismatch")
+        return int(row["id"])
+
+    if gid is not None:
+        row = conn.execute("SELECT id FROM groups WHERE id = ?", (gid,)).fetchone()
+        if row is None:
+            raise PoolServiceError("指定分组不存在", "group_not_found")
+        return int(row["id"])
+
+    row = conn.execute(
+        "SELECT id FROM groups WHERE LOWER(name) = LOWER(?) LIMIT 1",
+        (gname,),
+    ).fetchone()
+    if row is None:
+        raise PoolServiceError("指定分组不存在", "group_not_found")
+    return int(row["id"])
 
 
 def _read_settings_via_conn(conn) -> dict:
@@ -314,15 +396,25 @@ def claim_random(
     provider: Optional[str] = None,
     project_key: Optional[str] = None,
     email_domain: Optional[str] = None,
+    group_id: Any = None,
+    group_name: Optional[str] = None,
 ) -> dict:
     _validate_caller_id(caller_id)
     _validate_task_id(task_id)
     provider = _validate_provider(provider)
     project_key = _validate_project_key(project_key)
     email_domain = _validate_email_domain(email_domain)
+    # 先做参数形态校验，真正存在性解析放到拿到 conn 之后
+    _normalize_group_id(group_id)
+    _normalize_group_name(group_name)
 
     conn = create_sqlite_connection()
     try:
+        resolved_group_id = _resolve_group_id(
+            conn,
+            group_id=group_id,
+            group_name=group_name,
+        )
         settings = _read_settings_via_conn(conn)
         default_lease = settings["pool_default_lease_seconds"]
         _validate_lease_seconds(default_lease)
@@ -337,6 +429,7 @@ def claim_random(
                     task_id=task_id,
                     lease_seconds=default_lease,
                     provider=provider,
+                    group_id=resolved_group_id,
                     project_key=project_key,
                     email_domain=email_domain,
                     exclude_account_ids=attempted_account_ids,
@@ -373,46 +466,48 @@ def claim_random(
             except pool_repo.PoolRepositoryError as e:
                 raise PoolServiceError(str(e), e.error_code, http_status=500) from e
 
-        # accounts 池无命中：对临时邮箱类 provider（custom/gptmail/未指定）回退到 temp_emails 池领取
-        if provider in _TEMP_ELIGIBLE_PROVIDERS:
-            try:
-                temp_account = pool_repo.claim_temp_mailbox_atomic(
-                    conn,
-                    caller_id=caller_id,
-                    task_id=task_id,
-                    lease_seconds=default_lease,
-                    email_domain=email_domain,
-                )
-            except pool_repo.PoolRepositoryError as e:
-                raise PoolServiceError(str(e), e.error_code, http_status=500) from e
-            if temp_account is not None:
-                return temp_account
+        # 指定分组时只从该分组 accounts 领取，不做 temp/CF 回退
+        if resolved_group_id is None:
+            # accounts 池无命中：对临时邮箱类 provider（custom/gptmail/未指定）回退到 temp_emails 池领取
+            if provider in _TEMP_ELIGIBLE_PROVIDERS:
+                try:
+                    temp_account = pool_repo.claim_temp_mailbox_atomic(
+                        conn,
+                        caller_id=caller_id,
+                        task_id=task_id,
+                        lease_seconds=default_lease,
+                        email_domain=email_domain,
+                    )
+                except pool_repo.PoolRepositoryError as e:
+                    raise PoolServiceError(str(e), e.error_code, http_status=500) from e
+                if temp_account is not None:
+                    return temp_account
 
-        # 池为空：仅当显式指定 provider=cloudflare_temp_mail 时，动态创建 CF 临时邮箱
-        if provider == "cloudflare_temp_mail":
-            created_email, created_meta = _create_cf_mailbox_for_pool(email_domain=email_domain)
+            # 池为空：仅当显式指定 provider=cloudflare_temp_mail 时，动态创建 CF 临时邮箱
+            if provider == "cloudflare_temp_mail":
+                created_email, created_meta = _create_cf_mailbox_for_pool(email_domain=email_domain)
 
-            try:
-                inserted = pool_repo.insert_claimed_account(
-                    conn,
-                    email=created_email,
-                    caller_id=caller_id,
-                    task_id=task_id,
-                    lease_seconds=default_lease,
-                    provider="cloudflare_temp_mail",
-                    account_type="temp_mail",
-                    project_key=project_key,
-                    temp_mail_meta=created_meta,
-                    claim_log_detail="CF邮箱动态创建",
-                )
-                return inserted
-            except pool_repo.PoolRepositoryError as e:
-                # DB 写入失败时，尽力删除已创建的远程邮箱，避免资源泄漏（非阻塞）
-                _delete_cf_mailbox_nonblocking(email=created_email, meta=created_meta)
-                raise PoolServiceError(str(e), e.error_code, http_status=500) from e
-            except Exception as e:
-                _delete_cf_mailbox_nonblocking(email=created_email, meta=created_meta)
-                raise PoolServiceError("动态写入 CF 邮箱失败", "db_error", http_status=500) from e
+                try:
+                    inserted = pool_repo.insert_claimed_account(
+                        conn,
+                        email=created_email,
+                        caller_id=caller_id,
+                        task_id=task_id,
+                        lease_seconds=default_lease,
+                        provider="cloudflare_temp_mail",
+                        account_type="temp_mail",
+                        project_key=project_key,
+                        temp_mail_meta=created_meta,
+                        claim_log_detail="CF邮箱动态创建",
+                    )
+                    return inserted
+                except pool_repo.PoolRepositoryError as e:
+                    # DB 写入失败时，尽力删除已创建的远程邮箱，避免资源泄漏（非阻塞）
+                    _delete_cf_mailbox_nonblocking(email=created_email, meta=created_meta)
+                    raise PoolServiceError(str(e), e.error_code, http_status=500) from e
+                except Exception as e:
+                    _delete_cf_mailbox_nonblocking(email=created_email, meta=created_meta)
+                    raise PoolServiceError("动态写入 CF 邮箱失败", "db_error", http_status=500) from e
 
         if attempted_account_ids:
             detail = f"最后一次失败原因: {last_health_error}" if last_health_error else ""
