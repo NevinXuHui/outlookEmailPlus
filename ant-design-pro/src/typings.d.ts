@@ -1,0 +1,31 @@
+declare module '*.css';
+declare module '*.less';
+declare module '*.scss';
+declare module '*.sass';
+declare module '*.svg';
+declare module '*.png';
+declare module '*.jpg';
+declare module '*.jpeg';
+declare module '*.gif';
+declare module '*.bmp';
+declare module '*.tiff';
+declare module '*.md' {
+  const content: string;
+  export default content;
+}
+declare module 'mockjs';
+
+declare const __APP_VERSION__: string;
+declare const __UMI_VERSION__: string;
+declare const __UTOO_VERSION__: string;
+
+/** SPA 最小用户类型（替代脚手架 openapi 生成物） */
+declare namespace API {
+  type CurrentUser = {
+    name?: string;
+    avatar?: string;
+    userid?: string;
+    email?: string;
+    access?: string;
+  };
+}

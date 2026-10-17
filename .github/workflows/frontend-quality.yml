@@ -1,0 +1,67 @@
+name: Frontend Quality
+
+on:
+  pull_request:
+    paths:
+      - "ant-design-pro/**"
+      - ".github/workflows/frontend-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ant-design-pro
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ant-design-pro/package-lock.json
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Generate Umi runtime types
+        run: npx max setup
+      - name: Lint
+        run: npm run biome:lint
+      - name: Type check
+        run: npm run tsc
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Start performance visual smoke server
+        run: |
+          nohup node scripts/performance-preview-server.mjs > /tmp/performance-preview.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4173/overview?tab=performance > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/performance-preview.log
+          exit 1
+      - name: Capture performance dashboard
+        run: |
+          google-chrome --headless --no-sandbox --disable-gpu \
+            --window-size=1440,1200 --virtual-time-budget=5000 \
+            --screenshot=performance-dashboard.png \
+            "http://127.0.0.1:4173/overview?tab=performance"
+          google-chrome --headless --no-sandbox --disable-gpu \
+            --window-size=390,844 --virtual-time-budget=5000 \
+            --screenshot=performance-dashboard-mobile.png \
+            "http://127.0.0.1:4173/overview?tab=performance"
+          test -s performance-dashboard.png
+          test -s performance-dashboard-mobile.png
+      - name: Upload visual smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-dashboard
+          path: ant-design-pro/performance-dashboard*.png
+          if-no-files-found: error

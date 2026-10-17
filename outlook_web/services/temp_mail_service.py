@@ -6,10 +6,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from outlook_web.repositories import settings as settings_repo
 from outlook_web.repositories import temp_emails as temp_emails_repo
 from outlook_web.services.temp_mail_provider_custom import TempMailProviderReadError
 from outlook_web.services.temp_mail_provider_factory import (
     TempMailProviderFactoryError,
+    get_available_providers,
     get_temp_mail_provider,
 )
 from outlook_web.services.verification_extract_log import (
@@ -27,6 +29,37 @@ from outlook_web.services.verification_extractor import (
 
 TEMP_MAIL_SOURCE = temp_emails_repo.DEFAULT_TEMP_MAIL_SOURCE
 TEMP_MAIL_METHOD = "Temp Mail"
+_PROVIDER_CAPABILITY_KEYS = (
+    "create_mailbox",
+    "list_messages",
+    "get_message_detail",
+    "delete_mailbox",
+    "delete_message",
+    "clear_messages",
+)
+_BUILTIN_PROVIDER_NAMES = {
+    settings_repo.DEFAULT_TEMP_MAIL_PROVIDER,
+    settings_repo.LEGACY_TEMP_MAIL_PROVIDER,
+    settings_repo.CLOUDFLARE_TEMP_MAIL_PROVIDER,
+}
+
+
+def _normalize_provider_capabilities(provider: Any, options: dict[str, Any]) -> dict[str, bool]:
+    raw_capabilities = options.get("capabilities") or options.get("provider_capabilities")
+    if not isinstance(raw_capabilities, dict):
+        raw_capabilities = getattr(provider, "provider_capabilities", {})
+    if not isinstance(raw_capabilities, dict):
+        raw_capabilities = {}
+    return {key: bool(raw_capabilities.get(key, callable(getattr(provider, key, None)))) for key in _PROVIDER_CAPABILITY_KEYS}
+
+
+def _provider_is_configured(options: dict[str, Any], enabled: bool) -> bool:
+    configured = options.get("configured")
+    if configured is not None:
+        return bool(configured) and enabled
+    if "api_base_url" in options:
+        return enabled and bool(str(options.get("api_base_url") or "").strip())
+    return enabled
 
 
 class TempMailError(Exception):
@@ -254,9 +287,49 @@ class TempMailService:
         """
         normalized_pn = str(provider_name or "").strip() or None
         provider = self._get_provider(provider_name=normalized_pn, purpose="options")
-        options = provider.get_options()
-        options.setdefault("provider_name", str(options.get("provider") or ""))
-        options.setdefault("provider_label", "temp_mail")
+        options = dict(provider.get_options() or {})
+        resolved_name = str(
+            options.get("provider_name") or options.get("provider") or getattr(provider, "provider_name", "")
+        ).strip()
+        active_provider = settings_repo.get_temp_mail_runtime_provider_name()
+        catalog: list[dict[str, Any]] = []
+        selected_meta: dict[str, Any] = {}
+        for provider_meta in get_available_providers():
+            item = dict(provider_meta)
+            name = str(item.get("name") or "").strip()
+            item["kind"] = "builtin" if name in _BUILTIN_PROVIDER_NAMES else "plugin"
+            item["active"] = name == active_provider
+            item["selected"] = name == resolved_name
+            if item["selected"]:
+                selected_meta = item
+            catalog.append(item)
+
+        enabled = options.get("success") is not False and options.get("enabled") is not False
+        configured = _provider_is_configured(options, enabled)
+        if not enabled:
+            status = "disabled"
+            status_message = str(options.get("error") or options.get("message") or "临时邮箱服务未启用")
+        elif not configured:
+            status = "not_configured"
+            status_message = "临时邮箱 Provider 尚未完成配置"
+        else:
+            status = "ready"
+            status_message = "临时邮箱服务已启用"
+
+        options.update(
+            {
+                "provider_name": resolved_name,
+                "provider_label": str(selected_meta.get("label") or options.get("provider_label") or resolved_name),
+                "provider_kind": str(selected_meta.get("kind") or "plugin"),
+                "active_provider": active_provider,
+                "providers": catalog,
+                "capabilities": _normalize_provider_capabilities(provider, options),
+                "enabled": enabled,
+                "configured": configured,
+                "status": status,
+                "status_message": status_message,
+            }
+        )
         return options
 
     def _validate_prefix_and_domain(
@@ -346,6 +419,14 @@ class TempMailService:
         email_addr = str(result.get("email") or "").strip()
         if not email_addr:
             raise TempMailError("TEMP_EMAIL_CREATE_FAILED", "临时邮箱创建失败：缺少邮箱地址", status=502)
+        result_meta_raw = result.get("meta")
+        result_meta: dict[str, Any] = result_meta_raw if isinstance(result_meta_raw, dict) else {}
+        resolved_provider_name = (
+            str(
+                result.get("provider_name") or result_meta.get("provider_name") or getattr(provider, "provider_name", "") or ""
+            ).strip()
+            or normalized_pn
+        )
         mailbox = self._create_or_load_mailbox_record(
             email_addr=email_addr,
             mailbox_type="user",
@@ -353,8 +434,8 @@ class TempMailService:
             source=TEMP_MAIL_SOURCE,
             prefix=normalized_prefix,
             domain=normalized_domain,
-            meta=result.get("meta"),
-            provider_name=result.get("provider_name"),
+            meta=result_meta,
+            provider_name=resolved_provider_name,
             failure_code="TEMP_EMAIL_CREATE_FAILED",
             failure_message="临时邮箱创建失败",
             failure_status=502,
@@ -413,7 +494,7 @@ class TempMailService:
                         source=TEMP_MAIL_SOURCE,
                         prefix=prefix,
                         domain=domain,
-                        meta=probe_mailbox["meta"],
+                        meta=probe_mailbox["meta"] if isinstance(probe_mailbox["meta"], dict) else {},
                         provider_name=provider_name,
                     )
 
@@ -423,13 +504,15 @@ class TempMailService:
                 create_result = None
             if isinstance(create_result, dict) and create_result.get("success"):
                 created_email = str(create_result.get("email") or "").strip() or normalized_email
+                create_meta_raw = create_result.get("meta")
+                create_meta: dict[str, Any] = create_meta_raw if isinstance(create_meta_raw, dict) else {}
                 return self._create_or_load_mailbox_record(
                     email_addr=created_email,
                     mailbox_type="user",
                     visible_in_ui=True,
                     source=TEMP_MAIL_SOURCE,
-                    meta=create_result.get("meta"),
-                    provider_name=create_result.get("provider_name") or provider_name,
+                    meta=create_meta,
+                    provider_name=create_result.get("provider_name") or create_meta.get("provider_name") or provider_name,
                 )
 
         if not allow_local_fallback:
@@ -478,6 +561,14 @@ class TempMailService:
             )
         email_addr = str(result.get("email") or "").strip()
         task_token = self._generate_task_token()
+        result_meta_raw = result.get("meta")
+        result_meta: dict[str, Any] = result_meta_raw if isinstance(result_meta_raw, dict) else {}
+        resolved_provider_name = (
+            str(
+                result.get("provider_name") or result_meta.get("provider_name") or getattr(provider, "provider_name", "") or ""
+            ).strip()
+            or None
+        )
         mailbox = self._create_or_load_mailbox_record(
             email_addr=email_addr,
             mailbox_type="task",
@@ -489,8 +580,8 @@ class TempMailService:
             consumer_key=consumer_key,
             caller_id=caller_id,
             task_id=task_id,
-            meta=result.get("meta"),
-            provider_name=result.get("provider_name"),
+            meta=result_meta,
+            provider_name=resolved_provider_name,
             failure_code="TEMP_EMAIL_CREATE_FAILED",
             failure_message="任务邮箱创建失败",
             failure_status=502,
@@ -591,6 +682,9 @@ class TempMailService:
     def delete_message(self, email_or_mailbox: str | dict[str, Any], message_id: str) -> bool:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
         email_addr = str(mailbox.get("email") or "")
+        capabilities = (mailbox.get("meta") or {}).get("provider_capabilities")
+        if isinstance(capabilities, dict) and capabilities.get("delete_message") is False:
+            raise TempMailError("TEMP_EMAIL_MESSAGE_DELETE_UNSUPPORTED", "当前邮箱 Provider 不支持删除邮件", status=400)
         provider = self._get_provider(mailbox=mailbox)
         if not provider.delete_message(mailbox, message_id):
             raise TempMailError("TEMP_EMAIL_MESSAGE_DELETE_FAILED", "删除失败", status=502)
@@ -599,6 +693,9 @@ class TempMailService:
     def clear_messages(self, email_or_mailbox: str | dict[str, Any]) -> bool:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
         email_addr = str(mailbox.get("email") or "")
+        capabilities = (mailbox.get("meta") or {}).get("provider_capabilities")
+        if isinstance(capabilities, dict) and capabilities.get("clear_messages") is False:
+            raise TempMailError("TEMP_EMAIL_MESSAGES_CLEAR_UNSUPPORTED", "当前邮箱 Provider 不支持清空邮件", status=400)
         provider = self._get_provider(mailbox=mailbox)
         if not provider.clear_messages(mailbox):
             raise TempMailError("TEMP_EMAIL_MESSAGES_CLEAR_FAILED", "清空失败", status=502)

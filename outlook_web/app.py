@@ -195,6 +195,14 @@ def create_app(*, autostart_scheduler: Optional[bool] = None):
 
             app.register_blueprint(token_tool.create_blueprint())
 
+        from outlook_web import spa as spa_support
+
+        if spa_support.spa_enabled():
+
+            @app.route("/<path:spa_path>", methods=["GET"])
+            def spa_catchall(spa_path: str):
+                return spa_support.send_spa_asset(spa_path)
+
         # 浏览器扩展 CORS 支持（仅对 /api/external/* 路径）
         # chrome-extension:// 前缀不可被普通网页伪造，允许此来源不扩大安全边界
         import re as _re

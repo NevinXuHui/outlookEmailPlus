@@ -1,0 +1,120 @@
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*1GSgSYDD_aIAAAAAQsAAAAgAegCCAQ/AlibabaSans-Light.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*2zEUQqnPNesAAAAAQtAAAAgAegCCAQ/AlibabaSans-Regular.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*E_cxRbMlZqUAAAAAQuAAAAgAegCCAQ/AlibabaSans-Medium.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*E_cxRbMlZqUAAAAAQuAAAAgAegCCAQ/AlibabaSans-Bold.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*E_cxRbMlZqUAAAAAQuAAAAgAegCCAQ/AlibabaSans-Heavy.woff2")
+    format("woff2");
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family:
+    AlibabaSans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans',
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+.colorWeak {
+  filter: invert(80%);
+}
+
+.ant-layout {
+  min-height: 100vh;
+}
+
+/* 固定视口布局（对齐旧前端 main.css：页面本身不滚动，仅内容区内部滚动，
+   避免整页上下滑动与底部空白；侧边栏/顶栏保持固定） */
+.ant-pro-layout {
+  height: 100vh;
+  overflow: hidden;
+}
+.ant-pro-layout > .ant-layout {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.ant-pro-layout-container {
+  height: 100%;
+  overflow: hidden;
+}
+.ant-pro-layout-content {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ant-pro-sider.ant-layout-sider.ant-pro-sider-fixed {
+  left: unset;
+}
+
+.ant-pro-sider-collapsed .ant-pro-sider-link span:not([role='img']) {
+  display: none;
+}
+
+canvas {
+  display: block;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+/* 简洁模式选中行高亮（对齐旧前端 mail-row.is-selected） */
+.mailbox-compact-row-selected > td {
+  background: rgba(184, 92, 56, 0.08) !important;
+}
+
+@media (max-width: 768px) {
+  .ant-table {
+    width: 100%;
+    overflow-x: auto;
+    &-thead > tr,
+    &-tbody > tr {
+      > th,
+      > td {
+        white-space: pre;
+        > span {
+          display: block;
+        }
+      }
+    }
+  }
+}

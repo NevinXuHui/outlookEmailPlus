@@ -357,15 +357,20 @@ class CloudflareTempMailProvider(TempMailProviderBase):
             "pattern": str(prefix_rules.get("pattern") or DEFAULT_PREFIX_RULES["pattern"]),
         }
 
+        normalized_domains = _normalize_domain_entries(domains_payload, default_domain)
+        base_url = self._base_url()
+        configured = bool(base_url and self._admin_key() and any(item.get("enabled") for item in normalized_domains))
+
         return {
             "domain_strategy": "auto_or_manual",
             "default_mode": "auto",
-            "domains": _normalize_domain_entries(domains_payload, default_domain),
+            "domains": normalized_domains,
             "prefix_rules": normalized_prefix_rules,
             "provider": self.provider_name,
             "provider_name": self.provider_name,
             "provider_label": "cloudflare_temp_mail",
-            "api_base_url": self._base_url(),
+            "api_base_url": base_url,
+            "configured": configured,
         }
 
     def create_mailbox(self, *, prefix: str | None = None, domain: str | None = None) -> dict[str, Any]:

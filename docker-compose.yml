@@ -6,6 +6,10 @@ services:
     # image: ghcr.io/zeropointsix/outlook-email-plus:${IMAGE_TAG:-latest}
     # Docker Hub 镜像（如需切换取消注释，并注释上行）：
     # image: guangshanshui/outlook-email-plus:${IMAGE_TAG:-latest}
+    # ---------- 旧前端（legacy，需旧界面时切换） ----------
+    # 固定版本示例：IMAGE_TAG=v2.9.10-legacy
+    # image: ghcr.io/zeropointsix/outlook-email-plus-legacy:${IMAGE_TAG:-latest-legacy}
+    # image: guangshanshui/outlook-email-plus-legacy:${IMAGE_TAG:-latest-legacy}
 
     # 模式二（开发者）：本地构建（已启用）
     # 先 docker compose pull 远端作对照/回退，再本地 build 打标签覆盖运行

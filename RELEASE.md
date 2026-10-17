@@ -8,9 +8,10 @@
 
 - **代码版本**：以 Git Tag 为准，格式 `vX.Y.Z`（例如 `v1.11.0`）
 - **发布说明**：`CHANGELOG.md` 中对应版本段落（`## [vX.Y.Z] - YYYY-MM-DD`）
-- **Docker 镜像**：
-  - DockerHub：`guangshanshui/outlook-email-plus`（常用：`latest` / `vX.Y.Z`）
-  - GHCR：`ghcr.io/zeropointsix/outlook-email-plus`（常用：`latest` / `main` / `vX.Y.Z`）
+- **Docker 镜像（双镜像，两套前端）**：
+  - 新前端 SPA（默认）：DockerHub `guangshanshui/outlook-email-plus`；GHCR `ghcr.io/zeropointsix/outlook-email-plus`（标签：`latest` / `main` / `vX.Y.Z`）
+  - 旧前端 Legacy：DockerHub `guangshanshui/outlook-email-plus-legacy`；GHCR `ghcr.io/zeropointsix/outlook-email-plus-legacy`（标签：`latest-legacy` / `main-legacy` / `vX.Y.Z-legacy`）
+  - 双镜像分别由 `Dockerfile`（新前端 SPA）与 `Dockerfile.legacy`（旧前端）构建
 
 > 说明：镜像以 GitHub Actions 工作流 `.github/workflows/docker-build-push.yml` 为准。
 
@@ -28,10 +29,11 @@ Tag 统一带 `v` 前缀：`v1.11.0`。
 仓库存在工作流：**Build and Push Docker Image**（`docker-build-push.yml`），触发规则：
 - **push 到 `main/master/dev`**：会构建并推送镜像（其中 `main/master` 会推 `latest`）
 - **push Tag `v*.*.*`**：会构建并推送以 Tag 命名的镜像（例如 `v1.11.0`）
+- **双镜像**：打 Tag 或推 main/dev 时，CI 会同时构建两套前端镜像 —— 新前端 SPA（`vX.Y.Z` / `latest` 等）与旧前端 Legacy（`vX.Y.Z-legacy` / `latest-legacy` 等）
 
 因此：
-- 想要“稳定版本镜像”（`vX.Y.Z`）→ **必须打 Tag 并 push Tag**
-- 想要“体验最新代码”（`latest`）→ **push 到 main/master 即可**
+- 想要“稳定版本镜像”（`vX.Y.Z` / `vX.Y.Z-legacy`）→ **必须打 Tag 并 push Tag**
+- 想要“体验最新代码”（`latest` / `latest-legacy`）→ **push 到 main/master 即可**
 
 ## 发布前检查（Release 前置门禁）
 
@@ -121,11 +123,14 @@ git push origin vX.Y.Z
 6. **验证镜像**
 
 ```bash
-# 验证稳定版本镜像
+# 验证稳定版本镜像（新前端 SPA）
 docker pull guangshanshui/outlook-email-plus:vX.Y.Z
+# 验证稳定版本镜像（旧前端 legacy）
+docker pull guangshanshui/outlook-email-plus-legacy:vX.Y.Z-legacy
 
 # 验证 latest（main/master）
 docker pull guangshanshui/outlook-email-plus:latest
+docker pull guangshanshui/outlook-email-plus-legacy:latest-legacy
 ```
 
 验证点：

@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+#
+# Legacy 镜像（旧前端模式）
+# =====================================================================
+# 本文件构建「旧前端」版本：仅打包 Flask 后端与 templates/static 旧界面，
+# 不构建 ant-design-pro 新前端（SPA）。适用于：
+#   - 需要旧前端界面 / 低资源部署（无需 Node 构建，镜像更小）
+#   - 新前端出现问题时快速回滚到旧 UI
+# 对应镜像 tag 统一带 `-legacy` 后缀：
+#   ghcr.io/zeropointsix/outlook-email-plus:latest-legacy
+#   ghcr.io/zeropointsix/outlook-email-plus:vX.Y.Z-legacy
+# 详见 RELEASE.md「双镜像发布」与 README「两种前端模式」。
+# =====================================================================
+
+# 使用 Python 3.11 作为基础镜像
+FROM python:3.11-slim
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量（SPA_ENABLED=false：禁止服务任何 SPA 产物，固定旧前端）
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    GUNICORN_WORKERS=1 \
+    GUNICORN_THREADS=8 \
+    GUNICORN_TIMEOUT=120 \
+    SPA_ENABLED=false
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装依赖（pip 走国内镜像加速）
+RUN pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install gunicorn -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 复制应用代码（.dockerignore 已排除 node_modules/** 与 **/dist/）
+COPY . .
+
+# 创建数据目录
+RUN mkdir -p /app/data && chmod +x /app/scripts/start-gunicorn.sh
+
+# 暴露端口
+EXPOSE 5000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD ["python","-c","import urllib.request as u; u.urlopen('http://localhost:5000/healthz', timeout=4).read()"]
+
+# 启动应用：默认单 worker + 多线程，避免同步长轮询阻塞整站
+CMD ["scripts/start-gunicorn.sh"]

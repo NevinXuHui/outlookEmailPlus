@@ -34,6 +34,9 @@ class TempMailMailboxModelTests(unittest.TestCase):
                     "provider_name": "custom_domain_temp_mail",
                     "provider_cursor": "cursor-1",
                     "provider_capabilities": {
+                        "create_mailbox": True,
+                        "list_messages": False,
+                        "get_message_detail": False,
                         "delete_mailbox": False,
                         "delete_message": True,
                         "clear_messages": True,
@@ -59,6 +62,17 @@ class TempMailMailboxModelTests(unittest.TestCase):
         self.assertEqual(public["email"], "demo@mailbox-model.test")
         self.assertEqual(public["mailbox_type"], "user")
         self.assertTrue(public["visible_in_ui"])
+        self.assertEqual(
+            public["provider_capabilities"],
+            {
+                "create_mailbox": True,
+                "list_messages": False,
+                "get_message_detail": False,
+                "delete_mailbox": False,
+                "delete_message": True,
+                "clear_messages": True,
+            },
+        )
         self.assertNotIn("meta", public)
 
     def test_legacy_and_task_mailboxes_share_unified_descriptor_shape(self):

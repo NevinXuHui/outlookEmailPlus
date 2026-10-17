@@ -84,10 +84,7 @@ def _check_pool_access(endpoint: str):
     )
 
 
-@api_key_required
-@external_api_guards(feature="pool_claim_random")
-def api_external_pool_claim_random():
-    endpoint = "/api/external/pool/claim-random"
+def _claim_pool_account(endpoint: str, *, require_email_domain: bool = False):
     disabled_resp = _check_pool_external_enabled(endpoint)
     if disabled_resp is not None:
         return disabled_resp
@@ -102,6 +99,10 @@ def api_external_pool_claim_random():
     email_domain = body.get("email_domain")
     group_id = body.get("group_id")
     group_name = body.get("group_name")
+
+    if require_email_domain and not str(email_domain or "").strip():
+        _audit(endpoint, "error", details={"code": "EMAIL_DOMAIN_REQUIRED"})
+        return jsonify(external_api_service.fail("EMAIL_DOMAIN_REQUIRED", "email_domain 不能为空")), 400
 
     try:
         account = claim_random(
@@ -120,6 +121,8 @@ def api_external_pool_claim_random():
             "claim_token": account["claim_token"],
             "claimed_at": account.get("claimed_at") or "",
             "lease_expires_at": account["lease_expires_at"],
+            "provider": account.get("provider") or "",
+            "account_type": account.get("account_type") or "",
         }
         _audit(
             endpoint,
@@ -143,6 +146,18 @@ def api_external_pool_claim_random():
             details={"code": "INTERNAL_ERROR", "err": type(exc).__name__},
         )
         return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+@external_api_guards(feature="pool_claim_random")
+def api_external_pool_claim_random():
+    return _claim_pool_account("/api/external/pool/claim-random")
+
+
+@api_key_required
+@external_api_guards(feature="pool_claim_random")
+def api_external_pool_claim_domain():
+    return _claim_pool_account("/api/external/pool/claim-domain", require_email_domain=True)
 
 
 @api_key_required

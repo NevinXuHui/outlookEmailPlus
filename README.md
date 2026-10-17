@@ -40,7 +40,7 @@ OutlookMail Plus 是一款面向个人与团队的注册邮箱管理器。
 
 ## 版本亮点
 
-当前稳定版本：`v2.2.2`
+当前稳定版本：`v2.9.10`
 
 ### 近期版本速览
 
@@ -131,6 +131,15 @@ web_outlook_app.py    兼容入口
 ## 快速开始
 
 ### Docker 部署
+
+**两种前端模式**：镜像默认是「新前端」（Ant Design Pro SPA，从 v2.9.10 起为默认）。如需旧前端界面（更轻量、无 Node 构建），使用 `-legacy` 镜像：
+
+| 模式 | GHCR | Docker Hub |
+|------|------|------------|
+| 新前端（默认） | `ghcr.io/zeropointsix/outlook-email-plus:v2.9.10` | `guangshanshui/outlook-email-plus:v2.9.10` |
+| 旧前端 legacy | `ghcr.io/zeropointsix/outlook-email-plus-legacy:v2.9.10-legacy` | `guangshanshui/outlook-email-plus-legacy:v2.9.10-legacy` |
+
+对应 `latest` / `latest-legacy` 标签分别跟随 main 分支自动更新；新前端回滚旧界面时，把 `IMAGE_TAG` 切到 `v2.9.10-legacy`（或更低版本即可）。两种镜像共用同一后端 API 与数据库。
 
 **方式一：docker run（快速体验）**
 

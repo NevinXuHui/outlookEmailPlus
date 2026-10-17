@@ -2,7 +2,62 @@
 
 All notable changes to OutlookMail Plus are documented in this file.
 
-## [Unreleased]
+## [v2.9.11] - 2026-08-24
+
+### 修复 / Bug Fixes
+
+- **ZER-575 Provider 插件边界收敛**：邮箱池从运行时注册表识别第三方 Provider，并统一支持按 Provider 领取、动态创建、持久化和写库失败回滚。
+- **统一临时邮箱生命周期**：所有 Provider 均使用标准 `temp_mail` 状态机；插件不再引入专用数据库字段、关联表或成功后复用分支。
+
+## [v2.9.10] - 2026-08-17
+
+### 优化 / Improvements
+
+- **ZER-657 新前端临时邮箱设置迁移补齐**：临时邮箱页的设置入口直达独立设置页签；恢复 Provider、API、域名、默认域名、前缀规则和 Cloudflare Worker 配置，并补充 JSON 结构校验、脱敏密钥保护与域名对象展示兼容。
+- **ZER-582 纯白前端服务展示优化**：保持现有纯白主题、导航与全局色板不变；API Key 改为名称 / 状态 / 脱敏 Token / 操作的简洁列表，权限和邮箱范围固定在创建时选择并通过详情查看；Webhook 测试展示已保存配置的真实投递 URL、上游 HTTP 状态、耗时和尝试次数，Token 留空表示清空；AI 测试区分连通性与契约状态，并在请求失败时保留端点、模型和 HTTP 诊断。
+- **版本号更新为 2.9.10**。
+- **双镜像发布**：仓库提供两套 Dockerfile —— `Dockerfile`（默认，新前端 Ant Design Pro SPA）与 `Dockerfile.legacy`（旧前端）。Tag 发布时 CI 同时构建并推送两个镜像：`outlook-email-plus:v2.9.10`（SPA）与 `outlook-email-plus-legacy:v2.9.10-legacy`，部署时按前端模式选择镜像。
+
+### 集成 / Integration
+
+- **#109 新前端主线回收**：将 polish 分支与功能 PR（#130/#131/#132/#133/#134/#137）统一回收到 `feat/ant-design-pro-frontend-migration`（PR #109）。Railway 测试环境源分支改绑本分支。
+- **/healthz 构建标识**：返回 `git_sha` / `git_branch` / `build_time`，便于确认 Railway 实际运行提交。
+
+### 新增功能 / New Features
+
+- **ZER-381 新前端自动轮询对齐旧前端**：开启「自动轮询」设置后，标准模式选中账号即自动开始监听新邮件（对齐旧前端 `accounts.js` 选中即监听）；复制邮箱地址成功后立即开始监听该账号（对齐旧前端 `email-copied` 事件），覆盖注册收验证码主流程，不再只能手动拉取。
+- **ZER-381 顶栏 GitHub 链接**：头部操作区新增 GitHub 仓库入口（对齐旧前端抬头 `btn-github`），仓库地址逻辑抽取为 `utils/repoUrl.ts` 供顶栏与页脚复用。
+- **
+
+### 修复 / Bug Fixes
+
+- **ZER-381 监听完成后状态丢失**：轮询引擎停止/发现后不再删除条目，改为保留最终快照（`active=false`），「检测到验证码」「监听超时」等结果持续展示在账号卡片与简洁表格中。
+- **ZER-381 验证码提取后摘要不更新**：监听发现新邮件/验证码后自动刷新账号摘要与当前邮件列表；手动提取验证码成功后同步刷新，最新邮件摘要与摘要验证码即时更新。
+- **ZER-381 页面整页滚动与底部空白**：改为固定视口布局（对齐旧前端 `body{overflow:hidden}`），页面本身不再滚动，仅内容区内部滚动，顶栏与侧边栏保持固定。
+- **ZER-381 账号管理删除项字体不一致**：antd 主题 `fontFamily` 与全局 body 字体栈统一为同一 AlibabaSans 回退链，消除 AlibabaSans 加载失败时组件回退到不同默认字体造成的同页字体不一致。
+- **ZER-381 部署环境 logo/favicon 404**：Docker 镜像按 `.dockerignore` 排除了仓库 `img/` 目录，而 Flask `/img/<path>` 与 `/favicon.ico` 路由只从该目录取文件，导致新前端 logo、头像与 favicon 在部署环境全部 404。现在仓库文件缺失时回退到 SPA 构建产物（`ant-design-pro/public/img/`），两种运行环境均可加载。
+- **ZER-381 邮箱页账号栏信息不全且无法复制**：账号从截断的 Menu 项改为对齐旧前端的账号卡片——完整邮箱地址（截断改为完整展示，点击文本或复制图标即复制）、provider/状态/标签、备注、最近刷新时间，并恢复每账号快捷操作（验证码 / 复制 / 监听）。
+- **ZER-381 简洁模式竖排错乱**：简洁模式账号列表从竖排 List 改为横向长条表格（选择 / 邮箱(点击复制) / 验证码 / 最新邮件 / 分组标签 / 操作），对齐旧前端 `mail-row` 六列栅格；验证码按钮优先复用账号摘要码，无摘要码时兜底实时提取。
+- **ZER-381 邮件详情验证码区布局**：工具栏顺序对齐旧前端（提取并复制验证码主按钮 → 再次复制 → 信任原始 HTML），不再把信任开关放在最前。
+
+## [v2.9.7] - 2026-08-09
+
+### 修复 / Bug Fixes
+
+- **
+
+## [v2.9.6] - 2026-08-08
+
+### 优化 / Improvements
+
+- **
+
+## [v2.9.5] - 2026-08-05
+
+### 修复 / Bug Fixes
+
+- **ZER-381 无代理场景错误误分类**：仅在分组明确配置 `proxy_url` 时，才将 Graph 的 `ProxyError`/`ConnectionError` 判定为 `EMAIL_PROXY_CONNECTION_FAILED` / `PROXY_ERROR` 并跳过 IMAP 回退；无代理时继续 Graph → IMAP 回退。覆盖 `/api/emails`、external messages 与删除邮件回退路径。
+- **主题抽屉开关语义**：修正 Ant Design Pro `SettingDrawer` 的 `collapse` 开合状态接线。
 
 ## [v2.8.0] - 2026-07-26
 

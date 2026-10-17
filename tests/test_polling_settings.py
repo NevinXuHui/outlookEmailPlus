@@ -71,3 +71,48 @@ class PollingSettingsTests(unittest.TestCase):
         settings = resp2.get_json().get("settings", {})
         self.assertEqual(settings.get("polling_interval"), 20)
         self.assertEqual(settings.get("polling_count"), 3)
+
+    def test_put_settings_accepts_polling_contract_boundaries(self):
+        client = self.app.test_client()
+        self._login(client)
+
+        for interval, count in ((3, 0), (300, 100)):
+            with self.subTest(interval=interval, count=count):
+                resp = client.put(
+                    "/api/settings",
+                    json={
+                        "polling_interval": interval,
+                        "polling_count": count,
+                    },
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.assertTrue(resp.get_json().get("success"))
+
+                settings = client.get("/api/settings").get_json().get("settings", {})
+                self.assertEqual(settings.get("polling_interval"), interval)
+                self.assertEqual(settings.get("polling_count"), count)
+
+    def test_put_settings_rejects_values_outside_polling_contract(self):
+        client = self.app.test_client()
+        self._login(client)
+        cases = (
+            ({"polling_interval": 2}, "轮询间隔必须在 3-300 秒之间"),
+            ({"polling_interval": 301}, "轮询间隔必须在 3-300 秒之间"),
+            ({"polling_count": -1}, "轮询次数必须在 0-100 次之间"),
+            ({"polling_count": 101}, "轮询次数必须在 0-100 次之间"),
+        )
+
+        for payload, expected_error in cases:
+            with self.subTest(payload=payload):
+                resp = client.put("/api/settings", json=payload)
+                self.assertEqual(resp.status_code, 400)
+                body = resp.get_json()
+                self.assertFalse(body.get("success"))
+                self.assertIn(
+                    expected_error,
+                    body.get("error", {}).get("message", ""),
+                )
+
+        settings = client.get("/api/settings").get_json().get("settings", {})
+        self.assertEqual(settings.get("polling_interval"), 10)
+        self.assertEqual(settings.get("polling_count"), 5)

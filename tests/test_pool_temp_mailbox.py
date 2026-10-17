@@ -1,5 +1,7 @@
+import json
 import secrets
 import unittest
+from unittest.mock import Mock, patch
 
 from tests._import_app import import_web_app_module
 
@@ -59,6 +61,30 @@ class TempMailboxPoolTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _make_plugin_email(self, provider_name="plugin_provider", domain="plugin.test"):
+        temp_id, email, _ = self._make_temp_email(domain=domain)
+        conn = self.create_conn()
+        try:
+            conn.execute(
+                "UPDATE temp_emails SET meta_json = ? WHERE id = ?",
+                (json.dumps({"provider_name": provider_name}), temp_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return temp_id, email, domain
+
+    @staticmethod
+    def _fake_plugin_result(email, provider_name="plugin_provider"):
+        return {
+            "success": True,
+            "email": email,
+            "meta": {
+                "provider_name": provider_name,
+                "provider_mailbox_id": f"mailbox-{email.split('@', 1)[0]}",
+            },
+        }
+
     def _make_legacy_null_domain_email(self, domain):
         # 模拟老库：active 临时邮箱但 domain/prefix 为 NULL（v24 之前入库）
         conn = self.create_conn()
@@ -114,6 +140,163 @@ class TempMailboxPoolTests(unittest.TestCase):
         with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
             self.pool_service.claim_random(caller_id="reg_bot", task_id="t_outlook", provider="outlook", email_domain=domain)
         self.assertEqual(ctx.exception.error_code, "no_available_account")
+
+    def test_claim_random_unspecified_provider_can_claim_plugin_mailbox(self):
+        temp_id, email, domain = self._make_plugin_email()
+        result = self.pool_service.claim_random(
+            caller_id="reg_bot",
+            task_id="t_unspecified_plugin",
+            email_domain=domain,
+        )
+        self.assertEqual(result["id"], temp_id + self.pool_repo.TEMP_POOL_ID_OFFSET)
+        self.assertEqual(result["email"], email)
+        self.assertEqual(result["provider"], "plugin_provider")
+        self.assertEqual(result["account_type"], "temp_mail")
+
+    def test_claim_registered_plugin_uses_bounded_sql_query(self):
+        temp_id, email, _ = self._make_plugin_email()
+        conn = self.create_conn()
+        statements: list[str] = []
+        try:
+            conn.set_trace_callback(statements.append)
+            claimed = self.pool_repo.claim_temp_mailbox_atomic(
+                conn,
+                caller_id="reg_bot",
+                task_id="t_bounded_query",
+                lease_seconds=600,
+                provider="plugin_provider",
+            )
+        finally:
+            conn.set_trace_callback(None)
+            conn.close()
+
+        self.assertEqual(claimed["id"], temp_id + self.pool_repo.TEMP_POOL_ID_OFFSET)
+        self.assertEqual(claimed["email"], email)
+        claim_sql = next(statement for statement in statements if "SELECT * FROM temp_emails" in statement)
+        self.assertIn("json_valid", claim_sql)
+        self.assertIn("LIMIT 1", claim_sql)
+
+    def test_claim_random_registered_plugin_selects_existing_mailbox(self):
+        temp_id, email, _ = self._make_plugin_email()
+        with patch(
+            "outlook_web.services.temp_mail_provider_factory.get_available_providers",
+            return_value=[{"name": "plugin_provider"}],
+        ):
+            result = self.pool_service.claim_random(
+                caller_id="reg_bot",
+                task_id="t_existing_plugin",
+                provider="plugin_provider",
+            )
+
+        self.assertEqual(result["id"], temp_id + self.pool_repo.TEMP_POOL_ID_OFFSET)
+        self.assertEqual(result["email"], email)
+        self.assertEqual(result["provider"], "plugin_provider")
+        self.assertEqual(result["account_type"], "temp_mail")
+
+    def test_claim_random_registered_plugin_creates_generic_temp_mailbox(self):
+        provider = Mock()
+        provider.provider_capabilities = {"delete_mailbox": True}
+        provider.create_mailbox.return_value = self._fake_plugin_result("new-mailbox@plugin.test")
+        with (
+            patch(
+                "outlook_web.services.temp_mail_provider_factory.get_available_providers",
+                return_value=[{"name": "plugin_provider"}],
+            ),
+            patch(
+                "outlook_web.services.temp_mail_provider_factory.get_temp_mail_provider",
+                return_value=provider,
+            ),
+        ):
+            result = self.pool_service.claim_random(
+                caller_id="reg_bot",
+                task_id="t_plugin_create",
+                provider="plugin_provider",
+                project_key="project-a",
+            )
+
+        self.assertEqual(result["provider"], "plugin_provider")
+        self.assertEqual(result["account_type"], "temp_mail")
+        self.assertEqual(result["email"], "new-mailbox@plugin.test")
+
+        conn = self.create_conn()
+        try:
+            row = conn.execute(
+                "SELECT source, meta_json, pool_status FROM temp_emails WHERE email = ?",
+                ("new-mailbox@plugin.test",),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["source"], "custom_domain_temp_mail")
+        self.assertEqual(json.loads(row["meta_json"])["provider_name"], "plugin_provider")
+        self.assertEqual(row["pool_status"], "claimed")
+
+        self.assertEqual(
+            self.pool_service.complete_claim(
+                account_id=result["id"],
+                claim_token=result["claim_token"],
+                caller_id="reg_bot",
+                task_id="t_plugin_create",
+                result="success",
+            ),
+            "used",
+        )
+
+    def test_registered_plugin_insert_failure_rolls_back_remote_mailbox(self):
+        provider = Mock()
+        provider.provider_capabilities = {"delete_mailbox": True}
+        provider.create_mailbox.return_value = self._fake_plugin_result("rollback@plugin.test")
+        with (
+            patch(
+                "outlook_web.services.temp_mail_provider_factory.get_available_providers",
+                return_value=[{"name": "plugin_provider"}],
+            ),
+            patch(
+                "outlook_web.services.temp_mail_provider_factory.get_temp_mail_provider",
+                return_value=provider,
+            ),
+            patch.object(
+                self.pool_repo,
+                "insert_claimed_temp_mailbox",
+                side_effect=self.pool_repo.PoolRepositoryError("write failed", "db_error"),
+            ),
+        ):
+            with self.assertRaises(self.pool_service.PoolServiceError) as ctx:
+                self.pool_service.claim_random(
+                    caller_id="reg_bot",
+                    task_id="t_plugin_rollback",
+                    provider="plugin_provider",
+                )
+
+        self.assertEqual(ctx.exception.error_code, "db_error")
+        provider.delete_mailbox.assert_called_once()
+
+    def test_registered_plugin_without_delete_capability_skips_rollback(self):
+        provider = Mock()
+        provider.provider_capabilities = {"delete_mailbox": False}
+        provider.create_mailbox.return_value = self._fake_plugin_result("keep@plugin.test")
+        with (
+            patch(
+                "outlook_web.services.temp_mail_provider_factory.get_available_providers",
+                return_value=[{"name": "plugin_provider"}],
+            ),
+            patch(
+                "outlook_web.services.temp_mail_provider_factory.get_temp_mail_provider",
+                return_value=provider,
+            ),
+            patch.object(
+                self.pool_repo,
+                "insert_claimed_temp_mailbox",
+                side_effect=self.pool_repo.PoolRepositoryError("write failed", "db_error"),
+            ),
+        ):
+            with self.assertRaises(self.pool_service.PoolServiceError):
+                self.pool_service.claim_random(
+                    caller_id="reg_bot",
+                    task_id="t_plugin_no_delete",
+                    provider="plugin_provider",
+                )
+
+        provider.delete_mailbox.assert_not_called()
 
     def test_release_temp_mailbox(self):
         _, _, domain = self._make_temp_email()

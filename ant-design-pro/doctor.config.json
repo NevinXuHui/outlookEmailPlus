@@ -1,0 +1,38 @@
+{
+  "ignore": {
+    "files": [
+      "config/**",
+      "mock/**",
+      "public/**",
+      "scripts/**",
+      "types/**",
+      ".worktrees/**",
+      "src/.umi*/**",
+      "src/services/**",
+      "src/service-worker.js",
+      "**/_mock.ts",
+      "**/*.md",
+      "**/*.less",
+      "**/*.css"
+    ],
+    "overrides": [
+      {
+        "files": [
+          "src/global.tsx",
+          "src/global.style.ts",
+          "src/loading.tsx",
+          "src/locales/**",
+          "src/pages/**",
+          "tests/__mocks__/**"
+        ],
+        "rules": ["deslop/unused-file"]
+      },
+      {
+        "files": ["package.json"],
+        "rules": ["deslop/unused-dev-dependency"]
+      }
+    ]
+  },
+  "blocking": "error",
+  "adoptExistingLintConfig": true
+}

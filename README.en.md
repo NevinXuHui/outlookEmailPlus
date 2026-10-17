@@ -36,7 +36,7 @@ The repository already includes some screenshots, and more can be added later.
 
 ## Version Highlights
 
-Current stable version: `v2.2.2`
+Current stable version: `v2.9.10`
 
 ### Recent Version Overview
 
@@ -126,6 +126,15 @@ web_outlook_app.py    Backward-compatible entrypoint
 ## Quick Start
 
 ### Docker Deployment
+
+**Two frontend modes**: the default image ships the *new frontend* (Ant Design Pro SPA, default since v2.9.10). To use the *legacy frontend* (lighter, no Node build step), use the `-legacy` image:
+
+| Mode | GHCR | Docker Hub |
+|------|------|------------|
+| New frontend (default) | `ghcr.io/zeropointsix/outlook-email-plus:v2.9.10` | `guangshanshui/outlook-email-plus:v2.9.10` |
+| Legacy frontend | `ghcr.io/zeropointsix/outlook-email-plus-legacy:v2.9.10-legacy` | `guangshanshui/outlook-email-plus-legacy:v2.9.10-legacy` |
+
+`latest` / `latest-legacy` tags track the main branch. To roll back to the legacy UI, set `IMAGE_TAG` to `v2.9.10-legacy`. Both images share the same backend API and database.
 
 **Option 1: docker run (quick start)**
 

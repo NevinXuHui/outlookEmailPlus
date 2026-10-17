@@ -83,6 +83,20 @@ class TempMailServiceTests(unittest.TestCase):
         self.assertTrue(mailbox["visible_in_ui"])
         self.assertEqual(mailbox["created_by"], "user")
 
+    def test_generate_user_mailbox_persists_provider_name_from_provider(self):
+        with self.app.app_context():
+            from outlook_web.repositories import temp_emails as temp_emails_repo
+            from outlook_web.services.temp_mail_service import TempMailService
+
+            provider = _FakeTempMailProvider()
+            provider.provider_name = "plugin_provider"
+            service = TempMailService(provider=provider)
+            mailbox = service.generate_user_mailbox(prefix="hme", domain="mail.service.test")
+            saved = temp_emails_repo.get_temp_email_by_address(mailbox["email"])
+
+        self.assertEqual(saved["provider_name"], "plugin_provider")
+        self.assertEqual(saved["meta_json"]["provider_name"], "plugin_provider")
+
     def test_apply_and_finish_task_mailbox_records_task_fields(self):
         with self.app.app_context():
             from outlook_web.repositories import temp_emails as temp_emails_repo
@@ -217,6 +231,33 @@ class TempMailServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "TEMP_EMAIL_UPSTREAM_READ_FAILED")
         self.assertEqual(ctx.exception.status, 502)
         self.assertEqual(ctx.exception.data["operation"], "refresh_message_detail")
+
+    def test_unsupported_message_mutations_return_capability_errors(self):
+        with self.app.app_context():
+            from outlook_web.repositories import temp_emails as temp_emails_repo
+            from outlook_web.services.temp_mail_service import TempMailError, TempMailService
+
+            service = TempMailService(provider=_FakeTempMailProvider())
+            mailbox = {
+                "kind": temp_emails_repo.TEMP_MAIL_KIND,
+                "email": "unsupported@service.test",
+                "meta": {
+                    "provider_capabilities": {
+                        "delete_message": False,
+                        "clear_messages": False,
+                    }
+                },
+            }
+
+            with self.assertRaises(TempMailError) as delete_ctx:
+                service.delete_message(mailbox, "message-1")
+            with self.assertRaises(TempMailError) as clear_ctx:
+                service.clear_messages(mailbox)
+
+        self.assertEqual(delete_ctx.exception.code, "TEMP_EMAIL_MESSAGE_DELETE_UNSUPPORTED")
+        self.assertEqual(delete_ctx.exception.status, 400)
+        self.assertEqual(clear_ctx.exception.code, "TEMP_EMAIL_MESSAGES_CLEAR_UNSUPPORTED")
+        self.assertEqual(clear_ctx.exception.status, 400)
 
     def test_delete_message_keeps_local_cache_when_provider_delete_fails(self):
         with self.app.app_context():
