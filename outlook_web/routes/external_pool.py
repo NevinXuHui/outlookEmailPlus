@@ -5,6 +5,7 @@ from typing import Callable, Optional
 from flask import Blueprint
 
 from outlook_web.controllers import external_pool as external_pool_controller
+from outlook_web.controllers.pool_availability import api_external_pool_availability
 
 
 def create_blueprint(csrf_exempt: Optional[Callable] = None) -> Blueprint:
@@ -15,6 +16,11 @@ def create_blueprint(csrf_exempt: Optional[Callable] = None) -> Blueprint:
     """
     bp = Blueprint("external_pool", __name__)
     handlers = [
+        (
+            "/api/external/pool/availability",
+            api_external_pool_availability,
+            ["GET"],
+        ),
         (
             "/api/external/pool/claim-random",
             external_pool_controller.api_external_pool_claim_random,

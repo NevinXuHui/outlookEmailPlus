@@ -428,6 +428,7 @@ class ExternalPoolApiTests(unittest.TestCase):
                 "api_external_pool_claim_release",
                 "api_external_pool_claim_complete",
                 "api_external_pool_stats",
+                "api_external_pool_availability",
                 "api_external_groups",
             },
         )
