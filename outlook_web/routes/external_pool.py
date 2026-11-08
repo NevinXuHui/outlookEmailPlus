@@ -6,6 +6,7 @@ from flask import Blueprint
 
 from outlook_web.controllers import external_pool as external_pool_controller
 from outlook_web.controllers.pool_availability import api_external_pool_availability
+from outlook_web.controllers.account_groups import api_external_group_accounts
 
 
 def create_blueprint(csrf_exempt: Optional[Callable] = None) -> Blueprint:
@@ -16,6 +17,11 @@ def create_blueprint(csrf_exempt: Optional[Callable] = None) -> Blueprint:
     """
     bp = Blueprint("external_pool", __name__)
     handlers = [
+        (
+            "/api/external/accounts/group",
+            api_external_group_accounts,
+            ["GET"],
+        ),
         (
             "/api/external/pool/availability",
             api_external_pool_availability,
